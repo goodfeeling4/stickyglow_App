@@ -21,13 +21,14 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final TextEditingController _searchController;
   late final AnimationController _syncAnimationController;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _searchController = TextEditingController();
     _syncAnimationController = AnimationController(
       vsync: this,
@@ -38,12 +39,27 @@ class _HomeScreenState extends State<HomeScreen>
       final vm = context.read<HomeViewModel>();
       vm.loadNotes();
       vm.initConnectivityListener();
+      vm.startForegroundPolling();
       vm.checkAndAutoSync();
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
+    final vm = context.read<HomeViewModel>();
+    if (state == AppLifecycleState.resumed) {
+      vm.loadNotes();
+      vm.startForegroundPolling();
+      vm.checkAndAutoSync();
+    } else if (state == AppLifecycleState.paused) {
+      vm.stopForegroundPolling();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     _syncAnimationController.dispose();
     super.dispose();
@@ -249,7 +265,7 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
             const SizedBox(width: 10),
-            const Text('Sticky Notes'),
+            const Text('Sticky Glow'),
           ],
         ),
         actions: <Widget>[

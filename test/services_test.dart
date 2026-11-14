@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sticky_notes_ssh/models/ssh_profile.dart';
 import 'package:sticky_notes_ssh/services/background_sync_manager.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
 
@@ -97,6 +98,25 @@ void main() {
     test('enableAutoSync and disableAutoSync execute safely on non-mobile test runner', () async {
       await expectLater(BackgroundSyncManager.enableAutoSync(), completes);
       await expectLater(BackgroundSyncManager.disableAutoSync(), completes);
+    });
+  });
+
+  group('SshProfile Pairing Tests', () {
+    test('parses valid stickyglow URI from sticky pair', () {
+      const code =
+          'stickyglow://pair?name=LinuxLaptop&host=192.168.1.20&port=22&username=shahnebaj&remoteDir=/home/shahnebaj/Desktop/Sticky';
+      final profile = SshProfile.parsePairingCode(code);
+      expect(profile, isNotNull);
+      expect(profile!.name, 'LinuxLaptop');
+      expect(profile.host, '192.168.1.20');
+      expect(profile.port, 22);
+      expect(profile.username, 'shahnebaj');
+      expect(profile.remoteDir, '/home/shahnebaj/Desktop/Sticky');
+    });
+
+    test('returns null for empty or invalid codes', () {
+      expect(SshProfile.parsePairingCode(''), isNull);
+      expect(SshProfile.parsePairingCode('not-a-valid-pairing-code'), isNull);
     });
   });
 }

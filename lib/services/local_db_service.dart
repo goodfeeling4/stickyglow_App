@@ -71,7 +71,7 @@ class LocalDbService {
         host TEXT NOT NULL,
         port INTEGER NOT NULL DEFAULT 22,
         username TEXT NOT NULL,
-        remoteDir TEXT NOT NULL DEFAULT '~/sticky-notes',
+        remoteDir TEXT NOT NULL DEFAULT '~/Desktop/Sticky',
         priority INTEGER NOT NULL DEFAULT 0,
         privateKeyId TEXT NOT NULL
       )

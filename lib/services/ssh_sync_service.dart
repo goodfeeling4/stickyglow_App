@@ -12,6 +12,7 @@ import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/conflict_resolver.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
+import 'package:sticky_notes_ssh/services/udp_discovery_service.dart';
 
 /// Summary result of a bidirectional sync transaction.
 class SyncResult {
@@ -267,7 +268,7 @@ class SshSyncService {
     var autoMerged = 0;
     var conflicts = 0;
     var deleted = 0;
-    var remoteHasChanges = false;
+
 
     try {
       client = await _connectClient(profile);
@@ -281,25 +282,7 @@ class SshSyncService {
         errors.add('Failed to create remote directory: $e');
       }
 
-      // Ensure it is a Git repository and has user config
-      try {
-        await client.run(
-          'cd "$remoteDir" && (git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
-          '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
-          '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local")',
-        );
-      } catch (e) {
-        errors.add('Failed to verify or initialize Git repo: $e');
-      }
 
-      // Auto-commit any uncommitted laptop changes first
-      try {
-        await client.run(
-          'cd "$remoteDir" && git add -A && (git diff --cached --quiet || git commit -m "Laptop auto-commit \$(date -Iseconds)")',
-        );
-      } catch (e) {
-        errors.add('Failed to auto-commit laptop changes: $e');
-      }
 
       // List remote .md files
       final remoteMdFiles = <String, SftpName>{};
@@ -379,7 +362,6 @@ class SshSyncService {
               try {
                 _recentlyWrittenByApp[filename] = DateTime.now();
                 await sftp.remove('$remoteDir/$filename');
-                remoteHasChanges = true;
                 deleted++;
               } catch (e) {
                 errors.add('Failed to delete remote file $filename: $e');
@@ -403,7 +385,6 @@ class SshSyncService {
                 clearConflict: true,
               ),
             );
-            remoteHasChanges = true;
             pushed++;
             continue;
           }
@@ -465,14 +446,12 @@ class SshSyncService {
                     clearConflict: true,
                   ),
                 );
-                if (await _cleanupRemoteConflictFiles(
+                await _cleanupRemoteConflictFiles(
                   sftp,
                   remoteDir,
                   filename,
                   remoteConflictFiles,
-                )) {
-                  remoteHasChanges = true;
-                }
+                );
                 pulled++;
                 continue;
               }
@@ -497,14 +476,12 @@ class SshSyncService {
                     ),
                   );
                 }
-                if (await _cleanupRemoteConflictFiles(
+                await _cleanupRemoteConflictFiles(
                   sftp,
                   remoteDir,
                   filename,
                   remoteConflictFiles,
-                )) {
-                  remoteHasChanges = true;
-                }
+                );
 
               case FastForwardPull(:final content):
                 await _localDbService.writeLocalFile(filename, content);
@@ -519,14 +496,12 @@ class SshSyncService {
                     clearConflict: true,
                   ),
                 );
-                if (await _cleanupRemoteConflictFiles(
+                await _cleanupRemoteConflictFiles(
                   sftp,
                   remoteDir,
                   filename,
                   remoteConflictFiles,
-                )) {
-                  remoteHasChanges = true;
-                }
+                );
                 pulled++;
 
               case FastForwardPush():
@@ -549,7 +524,6 @@ class SshSyncService {
                   filename,
                   remoteConflictFiles,
                 );
-                remoteHasChanges = true;
                 pushed++;
 
               case AutoMerged(:final mergedContent):
@@ -572,7 +546,6 @@ class SshSyncService {
                   filename,
                   remoteConflictFiles,
                 );
-                remoteHasChanges = true;
                 autoMerged++;
 
               case ConflictDetected():
@@ -589,7 +562,6 @@ class SshSyncService {
                     '$remoteDir/$conflictFilename',
                     conflictContent,
                   );
-                  remoteHasChanges = true;
                 } catch (e) {
                   errors.add('Failed to write conflict backup $conflictFilename: $e');
                 }
@@ -618,22 +590,13 @@ class SshSyncService {
             try {
               _recentlyWrittenByApp[file] = DateTime.now();
               await sftp.remove('$remoteDir/$file');
-              remoteHasChanges = true;
             } catch (_) {}
           }
         }
       }
 
-      // Step 16: Commit mobile changes on remote Git repository
-      if (remoteHasChanges) {
-        try {
-          await client.run(
-            'cd "$remoteDir" && git add -A && (git diff --cached --quiet || git commit -m "Mobile sync \$(date -Iseconds)")',
-          );
-        } catch (e) {
-          errors.add('Failed to commit remote changes via Git: $e');
-        }
-      }
+      // Note: Desktop sticky-notes.service detects SFTP writes locally via inotify
+      // and automatically auto-commits to Git and updates the desktop wallpaper.
     } catch (e) {
       errors.add('SSH sync failed: $e');
     } finally {
@@ -674,7 +637,7 @@ class SshSyncService {
     required String laptopContent,
     required String phoneContent,
   }) {
-    return '<<<<<<< LAPTOP (Current ~/sticky-notes/$filename)\n'
+    return '<<<<<<< LAPTOP (Current ~/Desktop/Sticky/$filename)\n'
         '$laptopContent\n'
         '=======\n'
         '$phoneContent\n'
@@ -845,7 +808,7 @@ class SshSyncService {
     required String password,
     required String publicKeyOpenSsh,
     required String privateKeyPem,
-    String remoteDir = '~/sticky-notes',
+    String remoteDir = '~/Desktop/Sticky',
   }) async {
     // 1. Probe TCP socket reachability
     try {
@@ -938,100 +901,25 @@ class SshSyncService {
     }
   }
 
-  SSHClient? _watcherClient;
-  SSHSession? _watcherSession;
-  StreamSubscription<String>? _watcherStdoutSubscription;
-  Timer? _watcherDebounceTimer;
-  bool _isWatching = false;
+  final UdpDiscoveryService _udpDiscoveryService = UdpDiscoveryService();
 
-  /// Whether the live Linux `inotifywait` file watcher is currently active.
-  bool get isWatchingRemote => _isWatching;
+  /// Whether the live discovery beacon listener is currently active.
+  bool get isWatchingRemote => _udpDiscoveryService.isListening;
 
-  /// Starts listening to remote Linux filesystem events using `inotifywait` over an SSH session.
+  /// Starts listening for remote laptop update beacons (port 41234) over LAN / Hotspot.
   ///
-  /// Whenever a file is created, modified, or deleted on the laptop, [onRemoteChange] is invoked
-  /// with a 500ms debounce to trigger a real-time sync.
+  /// Consumes zero SSH bandwidth and zero battery while idle. When the laptop
+  /// modifies notes or connects, [onRemoteChange] is invoked to trigger an on-demand sync.
   Future<void> startRemoteFileWatcher({
     required void Function() onRemoteChange,
   }) async {
-    if (_isWatching) return;
-
-    final profile = await findReachableProfile();
-    if (profile == null) return;
-
-    try {
-      _watcherClient = await _connectClient(profile);
-      final remoteDir = await _resolveRemoteDir(_watcherClient!, profile.remoteDir);
-
-      // Verify inotifywait is available on the remote host
-      final checkBytes = await _watcherClient!.run('which inotifywait');
-      final whichPath = utf8.decode(checkBytes).trim();
-      if (whichPath.isEmpty || !whichPath.contains('inotifywait')) {
-        return;
-      }
-
-      // Execute inotifywait in continuous monitor mode
-      _watcherSession = await _watcherClient!.execute(
-        'inotifywait -m -q -e close_write,create,delete,moved_to,moved_from --format "%e %f" "$remoteDir"',
-      );
-
-      _isWatching = true;
-
-      _watcherStdoutSubscription = _watcherSession!.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen((line) {
-        final trimmed = line.trim();
-        if (trimmed.isEmpty) return;
-
-        final spaceIdx = trimmed.indexOf(' ');
-        final filename =
-            spaceIdx != -1 ? trimmed.substring(spaceIdx + 1).trim() : trimmed;
-
-        // Ignore git internal files, temp files, and conflict backups
-        if (filename.contains('.git') ||
-            filename.contains('.conflict-') ||
-            !filename.endsWith('.md')) {
-          return;
-        }
-
-        // Suppress echo events caused by the phone's own SFTP writes
-        final writeTime = _recentlyWrittenByApp[filename];
-        if (writeTime != null &&
-            DateTime.now().difference(writeTime).inSeconds < 3) {
-          _recentlyWrittenByApp.remove(filename);
-          return;
-        }
-
-        // Debounce to batch rapid edits
-        _watcherDebounceTimer?.cancel();
-        _watcherDebounceTimer = Timer(const Duration(milliseconds: 500), () {
-          onRemoteChange();
-        });
-      }, onDone: () {
-        stopRemoteFileWatcher();
-      }, onError: (_) {
-        stopRemoteFileWatcher();
-      });
-    } catch (_) {
-      stopRemoteFileWatcher();
-    }
+    await _udpDiscoveryService.startListening(
+      onBeaconReceived: onRemoteChange,
+    );
   }
 
-  /// Stops the active remote `inotifywait` file watcher and cleans up SSH sessions.
+  /// Stops the active discovery listener.
   void stopRemoteFileWatcher() {
-    _isWatching = false;
-    _watcherDebounceTimer?.cancel();
-    _watcherStdoutSubscription?.cancel();
-    _watcherStdoutSubscription = null;
-    try {
-      _watcherSession?.close();
-    } catch (_) {}
-    _watcherSession = null;
-    try {
-      _watcherClient?.close();
-    } catch (_) {}
-    _watcherClient = null;
+    _udpDiscoveryService.stopListening();
   }
 }

@@ -166,7 +166,7 @@ class SettingsViewModel extends ChangeNotifier {
     required String password,
     required String publicKeyOpenSsh,
     required String privateKeyPem,
-    String remoteDir = '~/sticky-notes',
+    String remoteDir = '~/Desktop/Sticky',
   }) {
     return _sshSyncService.installPublicKeyViaPassword(
       host: host,

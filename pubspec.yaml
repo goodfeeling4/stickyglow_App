@@ -1,5 +1,5 @@
 name: sticky_notes_ssh
-description: "Offline-first Android Sticky Notes app with SSH/SFTP sync to Linux laptop"
+description: "Sticky Glow - Offline-first Android Sticky Notes app with SSH/SFTP sync to Linux laptop"
 publish_to: 'none'
 version: 1.0.0+1
 

@@ -100,7 +100,7 @@ void main() {
 
     await tester.pumpAndSettle();
 
-    expect(find.text('Sticky Notes'), findsOneWidget);
+    expect(find.text('Sticky Glow'), findsOneWidget);
     expect(find.byType(FloatingActionButton), findsOneWidget);
     expect(find.text('No notes yet. Tap + to create one.'), findsOneWidget);
   });

@@ -279,8 +279,25 @@ class HomeViewModel extends ChangeNotifier {
     }).toList();
   }
 
+  Timer? _foregroundPollTimer;
+
+  /// Starts gentle periodic polling (30s) while the app is actively foregrounded.
+  void startForegroundPolling() {
+    _foregroundPollTimer?.cancel();
+    _foregroundPollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      checkAndAutoSync();
+    });
+  }
+
+  /// Stops foreground polling when app is backgrounded.
+  void stopForegroundPolling() {
+    _foregroundPollTimer?.cancel();
+    _foregroundPollTimer = null;
+  }
+
   @override
   void dispose() {
+    _foregroundPollTimer?.cancel();
     _connectivitySubscription?.cancel();
     _connectivityDebounceTimer?.cancel();
     _sshSyncService.stopRemoteFileWatcher();
