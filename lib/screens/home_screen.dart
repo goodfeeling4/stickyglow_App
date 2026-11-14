@@ -35,7 +35,10 @@ class _HomeScreenState extends State<HomeScreen>
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<HomeViewModel>().loadNotes();
+      final vm = context.read<HomeViewModel>();
+      vm.loadNotes();
+      vm.initConnectivityListener();
+      vm.checkAndAutoSync();
     });
   }
 
@@ -55,7 +58,8 @@ class _HomeScreenState extends State<HomeScreen>
       ),
     );
     if (mounted) {
-      viewModel.loadNotes();
+      await viewModel.loadNotes();
+      await viewModel.checkAndAutoSync();
     }
   }
 
@@ -257,13 +261,18 @@ class _HomeScreenState extends State<HomeScreen>
           // Settings gear icon
           IconButton(
             tooltip: 'SSH Settings',
-            onPressed: () {
-              Navigator.push<void>(
+            onPressed: () async {
+              final vm = context.read<HomeViewModel>();
+              await Navigator.push<void>(
                 context,
                 MaterialPageRoute<void>(
                   builder: (_) => const SshSettingsScreen(),
                 ),
               );
+              if (mounted) {
+                await vm.loadNotes();
+                await vm.checkAndAutoSync();
+              }
             },
             icon: const Icon(Icons.settings_outlined),
           ),

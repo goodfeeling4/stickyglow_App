@@ -1,6 +1,10 @@
+import 'dart:async';
+
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
+import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
 import 'package:sticky_notes_ssh/utils/markdown_checklist_helper.dart';
 import 'package:sticky_notes_ssh/widgets/sync_status_pill.dart';
@@ -12,11 +16,20 @@ class HomeViewModel extends ChangeNotifier {
   HomeViewModel({
     LocalDbService? localDbService,
     SshSyncService? sshSyncService,
+    SecureStorageService? secureStorageService,
+    Connectivity? connectivity,
   })  : _localDbService = localDbService ?? LocalDbService(),
-        _sshSyncService = sshSyncService ?? SshSyncService();
+        _sshSyncService = sshSyncService ?? SshSyncService(),
+        _secureStorageService = secureStorageService ?? SecureStorageService(),
+        _connectivity = connectivity ?? Connectivity();
 
   final LocalDbService _localDbService;
   final SshSyncService _sshSyncService;
+  final SecureStorageService _secureStorageService;
+  final Connectivity _connectivity;
+
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  Timer? _connectivityDebounceTimer;
 
   List<StickyNote> _notes = const <StickyNote>[];
   List<StickyNote> _filteredNotes = const <StickyNote>[];
@@ -118,6 +131,7 @@ class HomeViewModel extends ChangeNotifier {
       await _localDbService.deleteNote(noteId);
     }
     await loadNotes();
+    checkAndAutoSync();
   }
 
   /// Toggles the checkbox at [lineIndex] within the note's Markdown content,
@@ -139,12 +153,64 @@ class HomeViewModel extends ChangeNotifier {
     await _localDbService.updateNote(updatedNote);
     await _localDbService.writeLocalFile(note.filename, updatedContent);
     await loadNotes();
+    checkAndAutoSync();
+  }
+
+  /// Starts listening to network connectivity events and auto-syncs when online.
+  void initConnectivityListener() {
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription =
+        _connectivity.onConnectivityChanged.listen((results) {
+      final isConnected = results.any((r) => r != ConnectivityResult.none);
+      if (isConnected) {
+        _connectivityDebounceTimer?.cancel();
+        _connectivityDebounceTimer =
+            Timer(const Duration(milliseconds: 1500), () {
+          checkAndAutoSync();
+        });
+      }
+    });
+  }
+
+  /// Performs an automatic background probe and sync if auto-sync is enabled.
+  ///
+  /// Operates event-driven upon editor close, checkbox toggling, note deletion,
+  /// or network connectivity change (like inotifywait).
+  Future<SyncResult?> checkAndAutoSync({bool force = false}) async {
+    final isAutoSync =
+        force || await _secureStorageService.getAutoSyncEnabled();
+    if (!isAutoSync) {
+      return null;
+    }
+
+    if (_syncState == SyncState.syncing) {
+      return null;
+    }
+
+    try {
+      final reachable = await _sshSyncService.findReachableProfile();
+      if (reachable == null) {
+        if (_syncState != SyncState.offline) {
+          _syncState = SyncState.offline;
+          notifyListeners();
+        }
+        return null;
+      }
+
+      return await syncNow();
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Triggers an immediate bidirectional SSH sync transaction with the laptop.
   ///
   /// Updates [syncState] during and after sync, reloads notes, and returns [SyncResult].
   Future<SyncResult> syncNow() async {
+    if (_syncState == SyncState.syncing) {
+      return const SyncResult.empty();
+    }
+
     _syncState = SyncState.syncing;
     notifyListeners();
 
@@ -184,5 +250,12 @@ class HomeViewModel extends ChangeNotifier {
 
       return matchesQuery && matchesTag;
     }).toList();
+  }
+
+  @override
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    _connectivityDebounceTimer?.cancel();
+    super.dispose();
   }
 }

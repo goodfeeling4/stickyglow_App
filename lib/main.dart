@@ -22,21 +22,26 @@ Future<void> main() async {
     debugPrint('Failed to initialize NotificationService: $e\n$stack');
   }
 
-  // Initialize background sync manager (Workmanager) on supported platforms
-  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS)) {
-    try {
-      await BackgroundSyncManager.initialize();
-    } catch (e, stack) {
-      debugPrint('Failed to initialize BackgroundSyncManager: $e\n$stack');
-    }
-  }
-
   final localDbService = LocalDbService();
   final secureStorageService = SecureStorageService();
   final sshSyncService = SshSyncService(
     localDbService: localDbService,
     secureStorageService: secureStorageService,
   );
+
+  // Initialize background sync manager (Workmanager) if auto-sync is enabled
+  if (!kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS)) {
+    try {
+      final isAutoSync = await secureStorageService.getAutoSyncEnabled();
+      if (isAutoSync) {
+        await BackgroundSyncManager.enableAutoSync();
+      }
+    } catch (e, stack) {
+      debugPrint('Failed to initialize BackgroundSyncManager: $e\n$stack');
+    }
+  }
 
   runApp(
     MultiProvider(
@@ -48,6 +53,7 @@ Future<void> main() async {
           create: (_) => HomeViewModel(
             localDbService: localDbService,
             sshSyncService: sshSyncService,
+            secureStorageService: secureStorageService,
           ),
         ),
         ChangeNotifierProvider<SettingsViewModel>(

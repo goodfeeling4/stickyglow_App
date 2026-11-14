@@ -39,6 +39,9 @@ class FakeSecureStorageService implements SecureStorageService {
 
   @override
   Future<String?> getPassword(String profileId) async => null;
+
+  @override
+  Future<bool> getAutoSyncEnabled() async => false;
 }
 
 class FakeSshSyncService implements SshSyncService {
@@ -47,6 +50,9 @@ class FakeSshSyncService implements SshSyncService {
 
   @override
   Future<SyncResult> syncAll() async => const SyncResult.empty();
+
+  @override
+  Future<SshProfile?> findReachableProfile() async => null;
 }
 
 void main() {
@@ -65,6 +71,7 @@ void main() {
             create: (_) => HomeViewModel(
               localDbService: fakeDb,
               sshSyncService: fakeSync,
+              secureStorageService: fakeStorage,
             ),
           ),
           ChangeNotifierProvider<SettingsViewModel>(

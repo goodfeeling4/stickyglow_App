@@ -123,12 +123,22 @@ class FakeSshSyncService implements SshSyncService {
   );
 
   String nextTestResult = 'Connection successful!';
+  SshProfile? nextReachableProfile = const SshProfile(
+    id: 'p1',
+    name: 'Home LAN',
+    host: '192.168.1.100',
+    username: 'user',
+    privateKeyId: 'k1',
+  );
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
   Future<SyncResult> syncAll() async => nextSyncResult;
+
+  @override
+  Future<SshProfile?> findReachableProfile() async => nextReachableProfile;
 
   @override
   Future<String> testConnection(SshProfile profile) async => nextTestResult;
@@ -164,15 +174,23 @@ class FakeSecureStorageService implements SecureStorageService {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('HomeViewModel', () {
     late FakeLocalDbService db;
     late FakeSshSyncService sync;
+    late FakeSecureStorageService storage;
     late HomeViewModel vm;
 
     setUp(() {
       db = FakeLocalDbService();
       sync = FakeSshSyncService();
-      vm = HomeViewModel(localDbService: db, sshSyncService: sync);
+      storage = FakeSecureStorageService();
+      vm = HomeViewModel(
+        localDbService: db,
+        sshSyncService: sync,
+        secureStorageService: storage,
+      );
     });
 
     test('loads notes and sorts pinned and unpinned', () async {
@@ -324,6 +342,26 @@ void main() {
       // Offline test
       sync.nextSyncResult = const SyncResult.empty();
       await vm.syncNow();
+      expect(vm.syncState, SyncState.offline);
+    });
+
+    test('checkAndAutoSync respects autoSyncEnabled and triggers sync', () async {
+      storage.autoSync = false;
+      var result = await vm.checkAndAutoSync();
+      expect(result, isNull);
+
+      storage.autoSync = true;
+      result = await vm.checkAndAutoSync();
+      expect(result, isNotNull);
+      expect(result!.connectedProfile, 'Home LAN');
+      expect(vm.syncState, SyncState.connected);
+    });
+
+    test('checkAndAutoSync sets offline when no reachable profile', () async {
+      storage.autoSync = true;
+      sync.nextReachableProfile = null;
+      final result = await vm.checkAndAutoSync();
+      expect(result, isNull);
       expect(vm.syncState, SyncState.offline);
     });
   });
@@ -488,6 +526,10 @@ void main() {
       await vm.toggleAutoSync(true);
       expect(vm.autoSyncEnabled, isTrue);
       expect(await storage.getAutoSyncEnabled(), isTrue);
+
+      await vm.toggleAutoSync(false);
+      expect(vm.autoSyncEnabled, isFalse);
+      expect(await storage.getAutoSyncEnabled(), isFalse);
     });
   });
 }

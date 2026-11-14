@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:workmanager/workmanager.dart';
 
@@ -32,42 +33,86 @@ class BackgroundSyncManager {
     });
   }
 
-  /// Initializes the Workmanager plugin, registers the periodic 15-minute background task,
-  /// and schedules a one-off task for immediate synchronization.
+  /// Initializes the Workmanager plugin and registers periodic auto-sync if supported.
   static Future<void> initialize() async {
-    await Workmanager().initialize(
-      callbackDispatcher,
-      isInDebugMode: false,
-    );
+    await enableAutoSync();
+  }
 
-    await Workmanager().registerPeriodicTask(
-      taskName,
-      taskName,
-      frequency: const Duration(minutes: 15),
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-      ),
-      existingWorkPolicy: ExistingWorkPolicy.keep,
-    );
+  /// Enables auto-sync by initializing Workmanager, scheduling the 15-minute periodic task,
+  /// and scheduling an immediate background sync check.
+  static Future<void> enableAutoSync() async {
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        WidgetsFlutterBinding.ensureInitialized();
+        await Workmanager().initialize(
+          callbackDispatcher,
+          isInDebugMode: false,
+        );
 
-    await triggerImmediateSync();
+        await Workmanager().registerPeriodicTask(
+          taskName,
+          taskName,
+          frequency: const Duration(minutes: 15),
+          constraints: Constraints(
+            networkType: NetworkType.connected,
+          ),
+          existingWorkPolicy: ExistingWorkPolicy.update,
+        );
+
+        await triggerImmediateSync();
+      } catch (e) {
+        debugPrint('Failed to enable background auto-sync: $e');
+      }
+    }
+  }
+
+  /// Disables auto-sync by canceling all scheduled Workmanager tasks.
+  static Future<void> disableAutoSync() async {
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        WidgetsFlutterBinding.ensureInitialized();
+        await cancelAll();
+      } catch (e) {
+        debugPrint('Failed to cancel background sync tasks: $e');
+      }
+    }
   }
 
   /// Schedules a one-off background sync task to execute immediately when network is connected.
   static Future<void> triggerImmediateSync() async {
-    await Workmanager().registerOneOffTask(
-      '${immediateTaskName}_${DateTime.now().millisecondsSinceEpoch}',
-      immediateTaskName,
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-      ),
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-    );
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        await Workmanager().registerOneOffTask(
+          '${immediateTaskName}_${DateTime.now().millisecondsSinceEpoch}',
+          immediateTaskName,
+          constraints: Constraints(
+            networkType: NetworkType.connected,
+          ),
+          existingWorkPolicy: ExistingWorkPolicy.replace,
+        );
+      } catch (e) {
+        debugPrint('Failed to schedule immediate background sync: $e');
+      }
+    }
   }
 
   /// Cancels all scheduled periodic and one-off background sync tasks.
   static Future<void> cancelAll() async {
-    await Workmanager().cancelAll();
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS)) {
+      try {
+        await Workmanager().cancelAll();
+      } catch (e) {
+        debugPrint('Failed to cancel Workmanager tasks: $e');
+      }
+    }
   }
 
   /// Executes background synchronization and posts local Android notifications
@@ -75,12 +120,24 @@ class BackgroundSyncManager {
   static Future<bool> performBackgroundSync() async {
     try {
       WidgetsFlutterBinding.ensureInitialized();
-      final localDb = LocalDbService();
       final secureStorage = SecureStorageService();
+      final isEnabled = await secureStorage.getAutoSyncEnabled();
+      if (!isEnabled) {
+        return true;
+      }
+
+      final localDb = LocalDbService();
       final syncService = SshSyncService(
         localDbService: localDb,
         secureStorageService: secureStorage,
       );
+
+      // Probe reachable profiles. If none respond within 1500ms, abort silently (<2s).
+      final reachable = await syncService.findReachableProfile();
+      if (reachable == null) {
+        return true;
+      }
+
       final notificationService = NotificationService();
       await notificationService.initialize();
 

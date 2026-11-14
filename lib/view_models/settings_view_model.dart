@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:sticky_notes_ssh/models/ssh_profile.dart';
+import 'package:sticky_notes_ssh/services/background_sync_manager.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
@@ -137,10 +138,22 @@ class SettingsViewModel extends ChangeNotifier {
     }
   }
 
-  /// Updates the auto-sync preference in secure storage and notifies listeners.
+  /// Updates the auto-sync preference in secure storage, manages background tasks,
+  /// triggers an immediate sync if laptop is reachable, and notifies listeners.
   Future<void> toggleAutoSync(bool enabled) async {
     _autoSyncEnabled = enabled;
     await _secureStorageService.setAutoSyncEnabled(enabled);
+    if (enabled) {
+      await BackgroundSyncManager.enableAutoSync();
+      try {
+        final reachable = await _sshSyncService.findReachableProfile();
+        if (reachable != null) {
+          await _sshSyncService.syncAll();
+        }
+      } catch (_) {}
+    } else {
+      await BackgroundSyncManager.disableAutoSync();
+    }
     notifyListeners();
   }
 

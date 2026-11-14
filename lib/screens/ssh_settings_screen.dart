@@ -219,11 +219,24 @@ class _SshSettingsScreenState extends State<SshSettingsScreen> {
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   subtitle: const Text(
-                    'Automatically syncs notes in background when your laptop is reachable on Wi-Fi or Tailscale.',
+                    'Automatically syncs notes when laptop is connected and after note edits.',
                     style: TextStyle(fontSize: 12),
                   ),
                   value: viewModel.autoSyncEnabled,
-                  onChanged: viewModel.toggleAutoSync,
+                  onChanged: (bool value) async {
+                    await viewModel.toggleAutoSync(value);
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          value
+                              ? 'Auto-Sync enabled! Syncing when laptop connects or notes are edited.'
+                              : 'Auto-Sync disabled.',
+                        ),
+                        duration: const Duration(seconds: 3),
+                      ),
+                    );
+                  },
                 ),
                 const Divider(height: 1),
 

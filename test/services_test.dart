@@ -93,5 +93,10 @@ void main() {
       expect(BackgroundSyncManager.taskName, 'com.sticky.backgroundSync');
       expect(BackgroundSyncManager.immediateTaskName, 'com.sticky.immediateSync');
     });
+
+    test('enableAutoSync and disableAutoSync execute safely on non-mobile test runner', () async {
+      await expectLater(BackgroundSyncManager.enableAutoSync(), completes);
+      await expectLater(BackgroundSyncManager.disableAutoSync(), completes);
+    });
   });
 }
