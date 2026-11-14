@@ -212,11 +212,14 @@ class HomeViewModel extends ChangeNotifier {
     }
   }
 
+  bool _pendingRemoteSync = false;
+
   /// Triggers an immediate bidirectional SSH sync transaction with the laptop.
   ///
   /// Updates [syncState] during and after sync, reloads notes, and returns [SyncResult].
   Future<SyncResult> syncNow() async {
     if (_syncState == SyncState.syncing) {
+      _pendingRemoteSync = true;
       return const SyncResult.empty();
     }
 
@@ -247,6 +250,11 @@ class HomeViewModel extends ChangeNotifier {
       _sshSyncService.startRemoteFileWatcher(
         onRemoteChange: () => syncNow(),
       );
+    }
+
+    if (_pendingRemoteSync && _syncState != SyncState.offline) {
+      _pendingRemoteSync = false;
+      unawaited(syncNow());
     }
 
     return result;

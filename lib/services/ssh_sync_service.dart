@@ -216,12 +216,15 @@ class SshSyncService {
     }
   }
 
+  final Map<String, DateTime> _recentlyWrittenByApp = <String, DateTime>{};
+
   /// Writes [content] to a file on the remote host via SFTP.
   Future<void> _writeRemoteFile(
     SftpClient sftp,
     String remotePath,
     String content,
   ) async {
+    _recentlyWrittenByApp[p.basename(remotePath)] = DateTime.now();
     final file = await sftp.open(
       remotePath,
       mode: SftpFileOpenMode.create |
@@ -278,10 +281,12 @@ class SshSyncService {
         errors.add('Failed to create remote directory: $e');
       }
 
-      // Ensure it is a Git repository
+      // Ensure it is a Git repository and has user config
       try {
         await client.run(
-          'cd "$remoteDir" && (git rev-parse --git-dir >/dev/null 2>&1 || git init)',
+          'cd "$remoteDir" && (git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
+          '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
+          '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local")',
         );
       } catch (e) {
         errors.add('Failed to verify or initialize Git repo: $e');
@@ -367,6 +372,7 @@ class SshSyncService {
             // Deleted on phone -> delete remote
             if (isRemote) {
               try {
+                _recentlyWrittenByApp[filename] = DateTime.now();
                 await sftp.remove('$remoteDir/$filename');
                 remoteHasChanges = true;
                 deleted++;
@@ -841,7 +847,7 @@ class SshSyncService {
 
       // Execute inotifywait in continuous monitor mode
       _watcherSession = await _watcherClient!.execute(
-        'inotifywait -m -q -e close_write,create,delete,moved_to --format "%e %f" "$remoteDir"',
+        'inotifywait -m -q -e close_write,create,delete,moved_to,moved_from --format "%e %f" "$remoteDir"',
       );
 
       _isWatching = true;
@@ -854,10 +860,22 @@ class SshSyncService {
         final trimmed = line.trim();
         if (trimmed.isEmpty) return;
 
+        final spaceIdx = trimmed.indexOf(' ');
+        final filename =
+            spaceIdx != -1 ? trimmed.substring(spaceIdx + 1).trim() : trimmed;
+
         // Ignore git internal files, temp files, and conflict backups
-        if (trimmed.contains('.git') ||
-            trimmed.contains('.conflict-') ||
-            !trimmed.endsWith('.md')) {
+        if (filename.contains('.git') ||
+            filename.contains('.conflict-') ||
+            !filename.endsWith('.md')) {
+          return;
+        }
+
+        // Suppress echo events caused by the phone's own SFTP writes
+        final writeTime = _recentlyWrittenByApp[filename];
+        if (writeTime != null &&
+            DateTime.now().difference(writeTime).inSeconds < 3) {
+          _recentlyWrittenByApp.remove(filename);
           return;
         }
 
