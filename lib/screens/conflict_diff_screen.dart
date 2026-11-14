@@ -197,6 +197,11 @@ class _ConflictDiffScreenState extends State<ConflictDiffScreen>
     });
 
     try {
+      final remoteContent = widget.note.conflictRemoteContent;
+      if (remoteContent != null && remoteContent.isNotEmpty) {
+        await _localDbService.writeBaseFile(widget.note.filename, remoteContent);
+      }
+
       final updatedNote = widget.note.copyWith(
         content: winningContent,
         syncStatus: SyncStatus.pending,

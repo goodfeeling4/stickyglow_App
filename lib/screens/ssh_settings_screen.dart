@@ -319,123 +319,244 @@ class _SshSettingsScreenState extends State<SshSettingsScreen> {
     );
   }
 
+  Future<void> _copyPublicKey(SshProfile profile) async {
+    final pem = await SecureStorageService().getPrivateKey(profile.id);
+    if (!mounted) return;
+    if (pem != null) {
+      final pubKey = SshKeyHelper.extractOpenSshPublicKey(pem);
+      if (pubKey != null) {
+        await Clipboard.setData(ClipboardData(text: pubKey));
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Copied Public Key! Append to ~/.ssh/authorized_keys on your laptop.',
+            ),
+            duration: Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('No key found for this profile. Edit to generate one.'),
+      ),
+    );
+  }
+
   Widget _buildProfileTile(SshProfile profile, int index) {
     final theme = Theme.of(context);
     final viewModel = context.read<SettingsViewModel>();
 
     return Card(
       key: ValueKey<String>(profile.id),
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       elevation: 0.8,
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor:
-              theme.colorScheme.primaryContainer.withValues(alpha: 0.7),
-          foregroundColor: theme.colorScheme.onPrimaryContainer,
-          child: Text(
-            '#${index + 1}',
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-          ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
         ),
-        title: Text(
-          profile.name,
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text(
-              '${profile.username}@${profile.host}:${profile.port}',
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            ),
-            Text(
-              profile.remoteDir,
-              style: TextStyle(
-                fontSize: 11,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            // Move up in priority
-            if (index > 0)
-              IconButton(
-                tooltip: 'Move up in priority',
-                icon: const Icon(Icons.arrow_upward_rounded, size: 20),
-                onPressed: () => viewModel.reorderProfiles(index, index - 1),
-              ),
-            // Move down in priority
-            if (index < viewModel.profiles.length - 1)
-              IconButton(
-                tooltip: 'Move down in priority',
-                icon: const Icon(Icons.arrow_downward_rounded, size: 20),
-                onPressed: () => viewModel.reorderProfiles(index, index + 2),
-              ),
-            // Test connection button
-            IconButton(
-              tooltip: 'Test connection',
-              icon: const Icon(Icons.network_check_rounded, size: 20),
-              onPressed: () => _testProfile(profile),
-            ),
-            // Auto-setup key button (ssh-copy-id)
-            IconButton(
-              tooltip: 'Auto-Setup Key (ssh-copy-id)',
-              icon: const Icon(Icons.bolt_rounded, size: 20),
-              onPressed: () => _startSshCopyIdForProfile(profile),
-            ),
-            // Copy public key button
-            IconButton(
-              tooltip: 'Copy Public Key (for laptop ~/.ssh/authorized_keys)',
-              icon: const Icon(Icons.key_rounded, size: 20),
-              onPressed: () async {
-                final pem = await SecureStorageService().getPrivateKey(profile.id);
-                if (!mounted) return;
-                if (pem != null) {
-                  final pubKey = SshKeyHelper.extractOpenSshPublicKey(pem);
-                  if (pubKey != null) {
-                    await Clipboard.setData(ClipboardData(text: pubKey));
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Copied Public Key! Append to ~/.ssh/authorized_keys on your laptop.'),
-                        duration: Duration(seconds: 4),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _openProfileForm(existingProfile: profile),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              // Header Row: Priority Badge + Name + Action Buttons
+              Row(
+                children: <Widget>[
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '#${index + 1}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        color: theme.colorScheme.onPrimaryContainer,
                       ),
-                    );
-                    return;
-                  }
-                }
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('No key found for this profile. Edit to generate one.'),
+                    ),
                   ),
-                );
-              },
-            ),
-            // Edit button
-            IconButton(
-              tooltip: 'Edit profile',
-              icon: const Icon(Icons.edit_outlined, size: 20),
-              onPressed: () => _openProfileForm(existingProfile: profile),
-            ),
-            // Delete button
-            IconButton(
-              tooltip: 'Delete profile',
-              icon: Icon(
-                Icons.delete_outline,
-                size: 20,
-                color: theme.colorScheme.error,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      profile.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  // Quick Test Button
+                  IconButton.filledTonal(
+                    tooltip: 'Test connection',
+                    icon: const Icon(Icons.network_check_rounded, size: 18),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _testProfile(profile),
+                  ),
+                  const SizedBox(width: 2),
+                  // 3-dots Menu for secondary actions
+                  PopupMenuButton<String>(
+                    tooltip: 'More actions',
+                    icon: const Icon(Icons.more_vert),
+                    onSelected: (String action) async {
+                      switch (action) {
+                        case 'edit':
+                          _openProfileForm(existingProfile: profile);
+                        case 'copy_id':
+                          _startSshCopyIdForProfile(profile);
+                        case 'copy_key':
+                          _copyPublicKey(profile);
+                        case 'move_up':
+                          if (index > 0) {
+                            viewModel.reorderProfiles(index, index - 1);
+                          }
+                        case 'move_down':
+                          if (index < viewModel.profiles.length - 1) {
+                            viewModel.reorderProfiles(index, index + 2);
+                          }
+                        case 'delete':
+                          _confirmDeleteProfile(profile);
+                      }
+                    },
+                    itemBuilder: (menuContext) => <PopupMenuEntry<String>>[
+                      const PopupMenuItem<String>(
+                        value: 'edit',
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(Icons.edit_outlined),
+                          title: Text('Edit Profile'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      const PopupMenuItem<String>(
+                        value: 'copy_id',
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(Icons.bolt_rounded),
+                          title: Text('Auto-Setup Key (ssh-copy-id)'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      const PopupMenuItem<String>(
+                        value: 'copy_key',
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(Icons.key_rounded),
+                          title: Text('Copy Public Key'),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                      if (index > 0)
+                        const PopupMenuItem<String>(
+                          value: 'move_up',
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.arrow_upward_rounded),
+                            title: Text('Move Up in Priority'),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ),
+                      if (index < viewModel.profiles.length - 1)
+                        const PopupMenuItem<String>(
+                          value: 'move_down',
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.arrow_downward_rounded),
+                            title: Text('Move Down in Priority'),
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ),
+                      const PopupMenuDivider(),
+                      PopupMenuItem<String>(
+                        value: 'delete',
+                        child: ListTile(
+                          dense: true,
+                          leading: Icon(
+                            Icons.delete_outline,
+                            color: theme.colorScheme.error,
+                          ),
+                          title: Text(
+                            'Delete Profile',
+                            style: TextStyle(color: theme.colorScheme.error),
+                          ),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 2),
+                  // Drag handle
+                  ReorderableDragStartListener(
+                    index: index,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.drag_handle,
+                        color: theme.colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              onPressed: () => _confirmDeleteProfile(profile),
-            ),
-            // Drag handle
-            ReorderableDragStartListener(
-              index: index,
-              child: const Icon(Icons.drag_handle, color: Colors.grey),
-            ),
-          ],
+              const SizedBox(height: 10),
+              // Connection details: Host & Port
+              Row(
+                children: <Widget>[
+                  Icon(
+                    Icons.computer_rounded,
+                    size: 16,
+                    color: theme.colorScheme.primary.withValues(alpha: 0.8),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${profile.username}@${profile.host}:${profile.port}',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              // Directory path
+              Row(
+                children: <Widget>[
+                  Icon(
+                    Icons.folder_outlined,
+                    size: 16,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      profile.remoteDir,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

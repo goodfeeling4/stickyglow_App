@@ -117,6 +117,15 @@ class EditorViewModel extends ChangeNotifier {
 
       final StickyNote noteToSave;
       if (_note != null) {
+        if (_note!.syncStatus == SyncStatus.conflict &&
+            _note!.conflictRemoteContent != null &&
+            _note!.conflictRemoteContent!.isNotEmpty) {
+          await _localDbService.writeBaseFile(
+            _note!.filename,
+            _note!.conflictRemoteContent!,
+          );
+        }
+
         noteToSave = _note!.copyWith(
           title: title,
           content: content,
@@ -125,6 +134,7 @@ class EditorViewModel extends ChangeNotifier {
           tags: List<String>.from(_tags),
           updatedAt: now,
           syncStatus: SyncStatus.pending,
+          clearConflict: true,
         );
         await _localDbService.updateNote(noteToSave);
       } else {

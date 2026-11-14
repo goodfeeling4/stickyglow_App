@@ -303,14 +303,19 @@ class SshSyncService {
 
       // List remote .md files
       final remoteMdFiles = <String, SftpName>{};
+      final remoteConflictFiles = <String, List<String>>{};
       try {
         final remoteEntries = await sftp.listdir(remoteDir);
         for (final entry in remoteEntries) {
           final name = entry.filename;
-          if (name.endsWith('.md') &&
-              !name.startsWith('.') &&
-              !name.contains('.conflict-')) {
-            remoteMdFiles[name] = entry;
+          if (name.endsWith('.md') && !name.startsWith('.')) {
+            if (name.contains('.conflict-')) {
+              final conflictIdx = name.indexOf('.conflict-');
+              final baseName = '${name.substring(0, conflictIdx)}.md';
+              remoteConflictFiles.putIfAbsent(baseName, () => <String>[]).add(name);
+            } else {
+              remoteMdFiles[name] = entry;
+            }
           }
         }
       } catch (e) {
@@ -438,6 +443,41 @@ class SshSyncService {
                 await _readRemoteFile(sftp, '$remoteDir/$filename');
             final baseContent = await _localDbService.readBaseFile(filename);
 
+            // Detect if a prior conflict was resolved on the laptop:
+            // Either the PC user deleted the conflict file on PC, or edited the remote file.
+            if (localNote.syncStatus == SyncStatus.conflict) {
+              final pcHasConflictFile =
+                  remoteConflictFiles[filename]?.isNotEmpty ?? false;
+              if (!pcHasConflictFile ||
+                  (localNote.conflictRemoteContent != null &&
+                      remoteContent != localNote.conflictRemoteContent) ||
+                  localContent == remoteContent) {
+                // Resolved on PC or matching -> adopt remote version cleanly
+                await _localDbService.writeLocalFile(filename, remoteContent);
+                await _localDbService.writeBaseFile(filename, remoteContent);
+                final title = _deriveTitle(remoteContent, filename);
+                await _localDbService.updateNote(
+                  localNote.copyWith(
+                    title: title,
+                    content: remoteContent,
+                    syncStatus: SyncStatus.synced,
+                    lastSyncedAt: DateTime.now(),
+                    clearConflict: true,
+                  ),
+                );
+                if (await _cleanupRemoteConflictFiles(
+                  sftp,
+                  remoteDir,
+                  filename,
+                  remoteConflictFiles,
+                )) {
+                  remoteHasChanges = true;
+                }
+                pulled++;
+                continue;
+              }
+            }
+
             final resolution = ConflictResolver.resolve(
               base: baseContent,
               local: localContent,
@@ -457,6 +497,14 @@ class SshSyncService {
                     ),
                   );
                 }
+                if (await _cleanupRemoteConflictFiles(
+                  sftp,
+                  remoteDir,
+                  filename,
+                  remoteConflictFiles,
+                )) {
+                  remoteHasChanges = true;
+                }
 
               case FastForwardPull(:final content):
                 await _localDbService.writeLocalFile(filename, content);
@@ -471,6 +519,14 @@ class SshSyncService {
                     clearConflict: true,
                   ),
                 );
+                if (await _cleanupRemoteConflictFiles(
+                  sftp,
+                  remoteDir,
+                  filename,
+                  remoteConflictFiles,
+                )) {
+                  remoteHasChanges = true;
+                }
                 pulled++;
 
               case FastForwardPush():
@@ -486,6 +542,12 @@ class SshSyncService {
                     lastSyncedAt: DateTime.now(),
                     clearConflict: true,
                   ),
+                );
+                await _cleanupRemoteConflictFiles(
+                  sftp,
+                  remoteDir,
+                  filename,
+                  remoteConflictFiles,
                 );
                 remoteHasChanges = true;
                 pushed++;
@@ -504,6 +566,12 @@ class SshSyncService {
                     clearConflict: true,
                   ),
                 );
+                await _cleanupRemoteConflictFiles(
+                  sftp,
+                  remoteDir,
+                  filename,
+                  remoteConflictFiles,
+                );
                 remoteHasChanges = true;
                 autoMerged++;
 
@@ -511,10 +579,15 @@ class SshSyncService {
                 final conflictFilename =
                     _generateConflictFilename(filename);
                 try {
+                  final conflictContent = _generateConflictFileContent(
+                    filename: filename,
+                    laptopContent: remoteContent,
+                    phoneContent: localContent,
+                  );
                   await _writeRemoteFile(
                     sftp,
                     '$remoteDir/$conflictFilename',
-                    remoteContent,
+                    conflictContent,
                   );
                   remoteHasChanges = true;
                 } catch (e) {
@@ -531,6 +604,23 @@ class SshSyncService {
           }
         } catch (fileErr) {
           errors.add('Error syncing $filename: $fileErr');
+        }
+      }
+
+      // Clean up any lingering conflict files on the laptop for notes that are now synced
+      for (final entry in remoteConflictFiles.entries) {
+        final baseName = entry.key;
+        final localNote = localNotesMap[baseName];
+        if (localNote != null &&
+            localNote.syncStatus == SyncStatus.synced &&
+            localNote.conflictRemoteContent == null) {
+          for (final file in entry.value) {
+            try {
+              _recentlyWrittenByApp[file] = DateTime.now();
+              await sftp.remove('$remoteDir/$file');
+              remoteHasChanges = true;
+            } catch (_) {}
+          }
         }
       }
 
@@ -576,6 +666,41 @@ class SshSyncService {
         ? filename.substring(0, filename.length - 3)
         : filename;
     return '$baseName.conflict-$timestamp.md';
+  }
+
+  /// Formats a standard Git-style 3-way conflict diff file so PC users can inspect both versions.
+  static String _generateConflictFileContent({
+    required String filename,
+    required String laptopContent,
+    required String phoneContent,
+  }) {
+    return '<<<<<<< LAPTOP (Current ~/sticky-notes/$filename)\n'
+        '$laptopContent\n'
+        '=======\n'
+        '$phoneContent\n'
+        '>>>>>>> PHONE (Mobile version)\n';
+  }
+
+  /// Removes temporary `.conflict-*.md` backup files from the laptop once a note is in sync.
+  Future<bool> _cleanupRemoteConflictFiles(
+    SftpClient sftp,
+    String remoteDir,
+    String filename,
+    Map<String, List<String>> remoteConflictFiles,
+  ) async {
+    final files = remoteConflictFiles[filename];
+    var didDelete = false;
+    if (files != null && files.isNotEmpty) {
+      for (final file in files) {
+        try {
+          _recentlyWrittenByApp[file] = DateTime.now();
+          await sftp.remove('$remoteDir/$file');
+          didDelete = true;
+        } catch (_) {}
+      }
+      remoteConflictFiles.remove(filename);
+    }
+    return didDelete;
   }
 
   /// Derives a clean note title from the first heading or line of markdown content.

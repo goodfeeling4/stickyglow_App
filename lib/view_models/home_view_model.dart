@@ -121,11 +121,13 @@ class HomeViewModel extends ChangeNotifier {
   }
 
   /// Deletes a note by its [noteId] from both the database and local filesystem.
+  ///
+  /// Preserves the base snapshot file until the next sync so the deletion
+  /// propagates cleanly to the remote laptop instead of re-downloading.
   Future<void> deleteNote(String noteId) async {
     final note = await _localDbService.getNoteById(noteId);
     if (note != null) {
       await _localDbService.deleteLocalFile(note.filename);
-      await _localDbService.deleteBaseFile(note.filename);
       await _localDbService.deleteNote(noteId);
     } else {
       await _localDbService.deleteNote(noteId);
