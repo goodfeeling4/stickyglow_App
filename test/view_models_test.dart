@@ -142,6 +142,21 @@ class FakeSshSyncService implements SshSyncService {
 
   @override
   Future<String> testConnection(SshProfile profile) async => nextTestResult;
+
+  bool isWatching = false;
+
+  @override
+  bool get isWatchingRemote => isWatching;
+
+  @override
+  Future<void> startRemoteFileWatcher({required void Function() onRemoteChange}) async {
+    isWatching = true;
+  }
+
+  @override
+  void stopRemoteFileWatcher() {
+    isWatching = false;
+  }
 }
 
 class FakeSecureStorageService implements SecureStorageService {

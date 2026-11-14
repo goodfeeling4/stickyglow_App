@@ -26,6 +26,7 @@ class NoteEditorScreen extends StatefulWidget {
 class _NoteEditorScreenState extends State<NoteEditorScreen> {
   late final EditorViewModel _viewModel;
   late final FocusNode _focusNode;
+  bool _didSave = false;
 
   @override
   void initState() {
@@ -58,9 +59,10 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   Future<void> _handleBack() async {
     if (_viewModel.isDirty) {
       await _viewModel.saveNote();
+      _didSave = true;
     }
     if (mounted) {
-      Navigator.pop(context);
+      Navigator.pop(context, _didSave);
     }
   }
 
@@ -148,7 +150,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
                   await LocalDbService().deleteLocalFile(note.filename);
                 }
                 if (mounted) {
-                  Navigator.pop(context);
+                  Navigator.pop(context, true);
                 }
               },
               child: const Text('Delete'),

@@ -53,6 +53,15 @@ class FakeSshSyncService implements SshSyncService {
 
   @override
   Future<SshProfile?> findReachableProfile() async => null;
+
+  @override
+  bool get isWatchingRemote => false;
+
+  @override
+  Future<void> startRemoteFileWatcher({required void Function() onRemoteChange}) async {}
+
+  @override
+  void stopRemoteFileWatcher() {}
 }
 
 void main() {

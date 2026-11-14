@@ -194,10 +194,19 @@ class HomeViewModel extends ChangeNotifier {
           _syncState = SyncState.offline;
           notifyListeners();
         }
+        _sshSyncService.stopRemoteFileWatcher();
         return null;
       }
 
-      return await syncNow();
+      final result = await syncNow();
+
+      if (!_sshSyncService.isWatchingRemote) {
+        _sshSyncService.startRemoteFileWatcher(
+          onRemoteChange: () => syncNow(),
+        );
+      }
+
+      return result;
     } catch (_) {
       return null;
     }
@@ -218,6 +227,7 @@ class HomeViewModel extends ChangeNotifier {
 
     if (result.connectedProfile == null) {
       _syncState = SyncState.offline;
+      _sshSyncService.stopRemoteFileWatcher();
     } else if (result.hasConflicts) {
       _syncState = SyncState.conflict;
     } else {
@@ -230,6 +240,13 @@ class HomeViewModel extends ChangeNotifier {
     if (hasConflicts && _syncState != SyncState.offline) {
       _syncState = SyncState.conflict;
       notifyListeners();
+    }
+
+    // Keep live remote inotifywait watcher active while connected
+    if (_syncState != SyncState.offline && !_sshSyncService.isWatchingRemote) {
+      _sshSyncService.startRemoteFileWatcher(
+        onRemoteChange: () => syncNow(),
+      );
     }
 
     return result;
@@ -256,6 +273,7 @@ class HomeViewModel extends ChangeNotifier {
   void dispose() {
     _connectivitySubscription?.cancel();
     _connectivityDebounceTimer?.cancel();
+    _sshSyncService.stopRemoteFileWatcher();
     super.dispose();
   }
 }

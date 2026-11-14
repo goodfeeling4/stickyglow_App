@@ -806,4 +806,89 @@ class SshSyncService {
       keyClient?.close();
     }
   }
+
+  SSHClient? _watcherClient;
+  SSHSession? _watcherSession;
+  StreamSubscription<String>? _watcherStdoutSubscription;
+  Timer? _watcherDebounceTimer;
+  bool _isWatching = false;
+
+  /// Whether the live Linux `inotifywait` file watcher is currently active.
+  bool get isWatchingRemote => _isWatching;
+
+  /// Starts listening to remote Linux filesystem events using `inotifywait` over an SSH session.
+  ///
+  /// Whenever a file is created, modified, or deleted on the laptop, [onRemoteChange] is invoked
+  /// with a 500ms debounce to trigger a real-time sync.
+  Future<void> startRemoteFileWatcher({
+    required void Function() onRemoteChange,
+  }) async {
+    if (_isWatching) return;
+
+    final profile = await findReachableProfile();
+    if (profile == null) return;
+
+    try {
+      _watcherClient = await _connectClient(profile);
+      final remoteDir = await _resolveRemoteDir(_watcherClient!, profile.remoteDir);
+
+      // Verify inotifywait is available on the remote host
+      final checkBytes = await _watcherClient!.run('which inotifywait');
+      final whichPath = utf8.decode(checkBytes).trim();
+      if (whichPath.isEmpty || !whichPath.contains('inotifywait')) {
+        return;
+      }
+
+      // Execute inotifywait in continuous monitor mode
+      _watcherSession = await _watcherClient!.execute(
+        'inotifywait -m -q -e close_write,create,delete,moved_to --format "%e %f" "$remoteDir"',
+      );
+
+      _isWatching = true;
+
+      _watcherStdoutSubscription = _watcherSession!.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) return;
+
+        // Ignore git internal files, temp files, and conflict backups
+        if (trimmed.contains('.git') ||
+            trimmed.contains('.conflict-') ||
+            !trimmed.endsWith('.md')) {
+          return;
+        }
+
+        // Debounce to batch rapid edits
+        _watcherDebounceTimer?.cancel();
+        _watcherDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+          onRemoteChange();
+        });
+      }, onDone: () {
+        stopRemoteFileWatcher();
+      }, onError: (_) {
+        stopRemoteFileWatcher();
+      });
+    } catch (_) {
+      stopRemoteFileWatcher();
+    }
+  }
+
+  /// Stops the active remote `inotifywait` file watcher and cleans up SSH sessions.
+  void stopRemoteFileWatcher() {
+    _isWatching = false;
+    _watcherDebounceTimer?.cancel();
+    _watcherStdoutSubscription?.cancel();
+    _watcherStdoutSubscription = null;
+    try {
+      _watcherSession?.close();
+    } catch (_) {}
+    _watcherSession = null;
+    try {
+      _watcherClient?.close();
+    } catch (_) {}
+    _watcherClient = null;
+  }
 }

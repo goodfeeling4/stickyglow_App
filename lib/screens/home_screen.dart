@@ -51,13 +51,13 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _navigateToEditor({String? noteId}) async {
     final viewModel = context.read<HomeViewModel>();
-    await Navigator.push<void>(
+    final didChange = await Navigator.push<bool>(
       context,
-      MaterialPageRoute<void>(
+      MaterialPageRoute<bool>(
         builder: (_) => NoteEditorScreen(noteId: noteId),
       ),
     );
-    if (mounted) {
+    if (mounted && (didChange == true)) {
       await viewModel.loadNotes();
       await viewModel.checkAndAutoSync();
     }
@@ -236,7 +236,22 @@ class _HomeScreenState extends State<HomeScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sticky Notes'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.asset(
+                'assets/images/app_logo.png',
+                width: 30,
+                height: 30,
+                fit: BoxFit.cover,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text('Sticky Notes'),
+          ],
+        ),
         actions: <Widget>[
           // Animated sync button
           IconButton(
@@ -261,18 +276,13 @@ class _HomeScreenState extends State<HomeScreen>
           // Settings gear icon
           IconButton(
             tooltip: 'SSH Settings',
-            onPressed: () async {
-              final vm = context.read<HomeViewModel>();
-              await Navigator.push<void>(
+            onPressed: () {
+              Navigator.push<void>(
                 context,
                 MaterialPageRoute<void>(
                   builder: (_) => const SshSettingsScreen(),
                 ),
               );
-              if (mounted) {
-                await vm.loadNotes();
-                await vm.checkAndAutoSync();
-              }
             },
             icon: const Icon(Icons.settings_outlined),
           ),
