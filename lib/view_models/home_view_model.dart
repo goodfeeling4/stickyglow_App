@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sticky_notes_ssh/models/home_background.dart';
+import 'package:sticky_notes_ssh/models/ssh_profile.dart';
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
@@ -44,6 +45,9 @@ class HomeViewModel extends ChangeNotifier {
   bool _isLoading = false;
   HomeBackground _background = const HomeBackground.defaultTheme();
   bool _isGridView = true;
+  String? _activeProfileId;
+  SshProfile? _activeProfile;
+  List<SshProfile> _availableProfiles = const <SshProfile>[];
 
   /// The active home screen background configuration.
   HomeBackground get background => _background;
@@ -51,8 +55,17 @@ class HomeViewModel extends ChangeNotifier {
   /// Whether the notes are displayed in 2-column grid or 1-column markdown reader.
   bool get isGridView => _isGridView;
 
-  /// All sticky notes loaded from the local database.
+  /// All sticky notes loaded from the local database for the active profile.
   List<StickyNote> get notes => _notes;
+
+  /// Currently active profile ID.
+  String? get activeProfileId => _activeProfileId;
+
+  /// The currently active SSH machine profile, or `null` if none configured.
+  SshProfile? get activeProfile => _activeProfile;
+
+  /// List of all configured SSH machine profiles.
+  List<SshProfile> get availableProfiles => _availableProfiles;
 
   /// Notes matching the current search query and active tag filter.
   List<StickyNote> get filteredNotes => _filteredNotes;
@@ -92,19 +105,49 @@ class HomeViewModel extends ChangeNotifier {
         (StickyNote note) => note.syncStatus == SyncStatus.conflict,
       );
 
-  /// Loads all notes from SQLite, applies active filters, and updates listeners.
+  /// Loads all notes from SQLite for the active profile, applies active filters, and updates listeners.
   Future<void> loadNotes() async {
     _isLoading = true;
     notifyListeners();
 
     try {
-      _notes = await _localDbService.getAllNotes();
+      _availableProfiles = await _localDbService.getAllProfiles();
+      _activeProfileId = await _secureStorageService.getActiveProfileId();
+
+      if (_activeProfileId == null ||
+          !_availableProfiles.any((p) => p.id == _activeProfileId)) {
+        if (_availableProfiles.isNotEmpty) {
+          _activeProfileId = _availableProfiles.first.id;
+          await _secureStorageService.saveActiveProfileId(_activeProfileId!);
+        } else {
+          _activeProfileId = null;
+        }
+      }
+
+      _activeProfile = _availableProfiles
+          .where((p) => p.id == _activeProfileId)
+          .firstOrNull;
+
+      _notes = await _localDbService.getAllNotes(profileId: _activeProfileId);
       _applyFilters();
       await loadPreferences();
     } finally {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  /// Switches the active machine profile and immediately loads its isolated compartment notes offline.
+  Future<void> switchActiveProfile(String profileId) async {
+    if (_activeProfileId == profileId) return;
+    _activeProfileId = profileId;
+    await _secureStorageService.saveActiveProfileId(profileId);
+    _activeProfile = _availableProfiles.where((p) => p.id == profileId).firstOrNull;
+    _sshSyncService.stopRemoteFileWatcher();
+    _syncState = SyncState.offline;
+    notifyListeners();
+    await loadNotes();
+    unawaited(checkAndAutoSync());
   }
 
   /// Loads saved background and view mode preferences from storage.
@@ -203,7 +246,10 @@ class HomeViewModel extends ChangeNotifier {
   Future<void> deleteNote(String noteId) async {
     final note = await _localDbService.getNoteById(noteId);
     if (note != null) {
-      await _localDbService.deleteLocalFile(note.filename);
+      await _localDbService.deleteLocalFile(
+        note.filename,
+        profileId: note.profileId,
+      );
       await _localDbService.deleteNote(noteId);
     } else {
       await _localDbService.deleteNote(noteId);
@@ -229,7 +275,11 @@ class HomeViewModel extends ChangeNotifier {
     );
 
     await _localDbService.updateNote(updatedNote);
-    await _localDbService.writeLocalFile(note.filename, updatedContent);
+    await _localDbService.writeLocalFile(
+      note.filename,
+      updatedContent,
+      profileId: note.profileId,
+    );
     await loadNotes();
     checkAndAutoSync();
   }
@@ -295,7 +345,7 @@ class HomeViewModel extends ChangeNotifier {
   /// Triggers an immediate bidirectional SSH sync transaction with the laptop.
   ///
   /// Updates [syncState] during and after sync, reloads notes, and returns [SyncResult].
-  Future<SyncResult> syncNow() async {
+  Future<SyncResult> syncNow({String? profileId}) async {
     if (_syncState == SyncState.syncing) {
       _pendingRemoteSync = true;
       return const SyncResult.empty();
@@ -304,7 +354,9 @@ class HomeViewModel extends ChangeNotifier {
     _syncState = SyncState.syncing;
     notifyListeners();
 
-    final result = await _sshSyncService.syncAll();
+    final result = await _sshSyncService.syncAll(
+      profileId: profileId ?? _activeProfileId,
+    );
 
     if (result.connectedProfile == null) {
       _syncState = SyncState.offline;

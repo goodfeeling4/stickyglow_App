@@ -16,10 +16,14 @@ class NoteEditorScreen extends StatefulWidget {
   const NoteEditorScreen({
     super.key,
     this.noteId,
+    this.profileId,
   });
 
   /// The unique ID of an existing note, or `null` to create a new note.
   final String? noteId;
+
+  /// The profile ID compartment this note belongs to.
+  final String? profileId;
 
   @override
   State<NoteEditorScreen> createState() => _NoteEditorScreenState();
@@ -34,7 +38,10 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
   void initState() {
     super.initState();
     _focusNode = FocusNode();
-    _viewModel = EditorViewModel(noteId: widget.noteId);
+    _viewModel = EditorViewModel(
+      noteId: widget.noteId,
+      profileId: widget.profileId,
+    );
 
     _viewModel.loadNote().then((_) {
       if (mounted) {

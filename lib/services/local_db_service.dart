@@ -17,7 +17,7 @@ class LocalDbService {
   factory LocalDbService() => _instance;
 
   static const String _databaseName = 'sticky_notes.db';
-  static const int _databaseVersion = 1;
+  static const int _databaseVersion = 2;
 
   Database? _database;
 
@@ -43,6 +43,7 @@ class LocalDbService {
       dbPath,
       version: _databaseVersion,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -50,7 +51,9 @@ class LocalDbService {
     await db.execute('''
       CREATE TABLE notes (
         id TEXT PRIMARY KEY,
-        filename TEXT NOT NULL UNIQUE,
+        profileId TEXT NOT NULL DEFAULT '',
+        remotePath TEXT,
+        filename TEXT NOT NULL,
         title TEXT NOT NULL,
         content TEXT NOT NULL,
         colorIndex INTEGER NOT NULL DEFAULT 0,
@@ -72,15 +75,34 @@ class LocalDbService {
         port INTEGER NOT NULL DEFAULT 22,
         username TEXT NOT NULL,
         remoteDir TEXT NOT NULL DEFAULT '~/sticky-notes',
+        remotePaths TEXT NOT NULL DEFAULT '[]',
         priority INTEGER NOT NULL DEFAULT 0,
         privateKeyId TEXT NOT NULL
       )
     ''');
 
+    await db.execute('CREATE INDEX idx_notes_profile_id ON notes (profileId)');
     await db.execute('CREATE INDEX idx_notes_filename ON notes (filename)');
     await db.execute('CREATE INDEX idx_notes_sync_status ON notes (syncStatus)');
     await db.execute('CREATE INDEX idx_notes_is_pinned ON notes (isPinned)');
     await db.execute('CREATE INDEX idx_profiles_priority ON ssh_profiles (priority)');
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      try {
+        await db.execute("ALTER TABLE notes ADD COLUMN profileId TEXT NOT NULL DEFAULT ''");
+      } catch (_) {}
+      try {
+        await db.execute("ALTER TABLE notes ADD COLUMN remotePath TEXT");
+      } catch (_) {}
+      try {
+        await db.execute("ALTER TABLE ssh_profiles ADD COLUMN remotePaths TEXT NOT NULL DEFAULT '[]'");
+      } catch (_) {}
+      try {
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_notes_profile_id ON notes (profileId)');
+      } catch (_) {}
+    }
   }
 
   // ===========================================================================
@@ -88,39 +110,70 @@ class LocalDbService {
   // ===========================================================================
 
   /// Retrieves all notes ordered by pinned status (descending) and last updated (descending).
-  Future<List<StickyNote>> getAllNotes() async {
+  /// If [profileId] is provided, only retrieves notes belonging to that profile compartment.
+  Future<List<StickyNote>> getAllNotes({String? profileId}) async {
     final db = await database;
-    final results = await db.query(
-      'notes',
-      orderBy: 'isPinned DESC, updatedAt DESC',
-    );
+    final List<Map<String, dynamic>> results;
+    if (profileId != null && profileId.isNotEmpty) {
+      results = await db.query(
+        'notes',
+        where: 'profileId = ?',
+        whereArgs: <Object>[profileId],
+        orderBy: 'isPinned DESC, updatedAt DESC',
+      );
+    } else {
+      results = await db.query(
+        'notes',
+        orderBy: 'isPinned DESC, updatedAt DESC',
+      );
+    }
     return results.map(StickyNote.fromMap).toList();
   }
 
-  /// Retrieves a single note by its unique [id], or `null` if not found.
-  Future<StickyNote?> getNoteById(String id) async {
+  /// Retrieves a single note by its unique [id], optionally verifying [profileId].
+  Future<StickyNote?> getNoteById(String id, {String? profileId}) async {
     final db = await database;
-    final results = await db.query(
-      'notes',
-      where: 'id = ?',
-      whereArgs: <Object>[id],
-      limit: 1,
-    );
+    final List<Map<String, dynamic>> results;
+    if (profileId != null && profileId.isNotEmpty) {
+      results = await db.query(
+        'notes',
+        where: 'id = ? AND profileId = ?',
+        whereArgs: <Object>[id, profileId],
+        limit: 1,
+      );
+    } else {
+      results = await db.query(
+        'notes',
+        where: 'id = ?',
+        whereArgs: <Object>[id],
+        limit: 1,
+      );
+    }
     if (results.isEmpty) {
       return null;
     }
     return StickyNote.fromMap(results.first);
   }
 
-  /// Retrieves a single note by its [filename], or `null` if not found.
-  Future<StickyNote?> getNoteByFilename(String filename) async {
+  /// Retrieves a single note by its [filename], optionally within [profileId].
+  Future<StickyNote?> getNoteByFilename(String filename, {String? profileId}) async {
     final db = await database;
-    final results = await db.query(
-      'notes',
-      where: 'filename = ?',
-      whereArgs: <Object>[filename],
-      limit: 1,
-    );
+    final List<Map<String, dynamic>> results;
+    if (profileId != null && profileId.isNotEmpty) {
+      results = await db.query(
+        'notes',
+        where: 'filename = ? AND profileId = ?',
+        whereArgs: <Object>[filename, profileId],
+        limit: 1,
+      );
+    } else {
+      results = await db.query(
+        'notes',
+        where: 'filename = ?',
+        whereArgs: <Object>[filename],
+        limit: 1,
+      );
+    }
     if (results.isEmpty) {
       return null;
     }
@@ -158,46 +211,97 @@ class LocalDbService {
     );
   }
 
-  /// Retrieves all notes currently flagged with [SyncStatus.conflict].
-  Future<List<StickyNote>> getConflictNotes() async {
+  /// Deletes all notes belonging to [profileId].
+  Future<int> deleteNotesByProfile(String profileId) async {
     final db = await database;
-    final results = await db.query(
+    final count = await db.delete(
       'notes',
-      where: 'syncStatus = ?',
-      whereArgs: <Object>[SyncStatus.conflict.name],
-      orderBy: 'updatedAt DESC',
+      where: 'profileId = ?',
+      whereArgs: <Object>[profileId],
     );
+
+    // Also delete the profile's disk compartment directory
+    try {
+      final appDocDir = await getApplicationDocumentsDirectory();
+      final profileDir = Directory(p.join(appDocDir.path, 'profiles', profileId));
+      if (await profileDir.exists()) {
+        await profileDir.delete(recursive: true);
+      }
+    } catch (_) {}
+
+    return count;
+  }
+
+  /// Retrieves all notes currently flagged with [SyncStatus.conflict], optionally within [profileId].
+  Future<List<StickyNote>> getConflictNotes({String? profileId}) async {
+    final db = await database;
+    final List<Map<String, dynamic>> results;
+    if (profileId != null && profileId.isNotEmpty) {
+      results = await db.query(
+        'notes',
+        where: 'syncStatus = ? AND profileId = ?',
+        whereArgs: <Object>[SyncStatus.conflict.name, profileId],
+        orderBy: 'updatedAt DESC',
+      );
+    } else {
+      results = await db.query(
+        'notes',
+        where: 'syncStatus = ?',
+        whereArgs: <Object>[SyncStatus.conflict.name],
+        orderBy: 'updatedAt DESC',
+      );
+    }
     return results.map(StickyNote.fromMap).toList();
   }
 
-  /// Searches notes whose title or content contains [query], case-insensitively.
-  Future<List<StickyNote>> searchNotes(String query) async {
+  /// Searches notes whose title or content contains [query], case-insensitively, optionally within [profileId].
+  Future<List<StickyNote>> searchNotes(String query, {String? profileId}) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) {
-      return getAllNotes();
+      return getAllNotes(profileId: profileId);
     }
     final db = await database;
     final pattern = '%$trimmed%';
-    final results = await db.query(
-      'notes',
-      where: 'title LIKE ? OR content LIKE ?',
-      whereArgs: <Object>[pattern, pattern],
-      orderBy: 'isPinned DESC, updatedAt DESC',
-    );
+    final List<Map<String, dynamic>> results;
+    if (profileId != null && profileId.isNotEmpty) {
+      results = await db.query(
+        'notes',
+        where: '(title LIKE ? OR content LIKE ?) AND profileId = ?',
+        whereArgs: <Object>[pattern, pattern, profileId],
+        orderBy: 'isPinned DESC, updatedAt DESC',
+      );
+    } else {
+      results = await db.query(
+        'notes',
+        where: 'title LIKE ? OR content LIKE ?',
+        whereArgs: <Object>[pattern, pattern],
+        orderBy: 'isPinned DESC, updatedAt DESC',
+      );
+    }
     return results.map(StickyNote.fromMap).toList();
   }
 
-  /// Retrieves notes containing the specified [tag].
-  Future<List<StickyNote>> getNotesByTag(String tag) async {
+  /// Retrieves notes containing the specified [tag], optionally within [profileId].
+  Future<List<StickyNote>> getNotesByTag(String tag, {String? profileId}) async {
     final db = await database;
     // JSON tags are stored as '["tag1","tag2"]', so match quoted tag.
     final pattern = '%"${tag.replaceAll('"', '')}"%';
-    final results = await db.query(
-      'notes',
-      where: 'tags LIKE ?',
-      whereArgs: <Object>[pattern],
-      orderBy: 'isPinned DESC, updatedAt DESC',
-    );
+    final List<Map<String, dynamic>> results;
+    if (profileId != null && profileId.isNotEmpty) {
+      results = await db.query(
+        'notes',
+        where: 'tags LIKE ? AND profileId = ?',
+        whereArgs: <Object>[pattern, profileId],
+        orderBy: 'isPinned DESC, updatedAt DESC',
+      );
+    } else {
+      results = await db.query(
+        'notes',
+        where: 'tags LIKE ?',
+        whereArgs: <Object>[pattern],
+        orderBy: 'isPinned DESC, updatedAt DESC',
+      );
+    }
     return results
         .map(StickyNote.fromMap)
         .where((StickyNote note) => note.tags.contains(tag))
@@ -265,35 +369,39 @@ class LocalDbService {
   }
 
   // ===========================================================================
-  // File I/O for Notes & Sync Base
+  // File I/O for Notes & Sync Base (Isolated per profile compartment)
   // ===========================================================================
 
-  /// Returns the local working notes directory (`appDocDir/notes/`),
-  /// creating it if it does not already exist.
-  Future<Directory> getNotesDir() async {
+  /// Returns the local working notes directory for [profileId]
+  /// (`appDocDir/profiles/<profileId>/notes/`), creating it if it does not exist.
+  /// If [profileId] is null or empty, falls back to `'default'`.
+  Future<Directory> getNotesDir({String? profileId}) async {
     final appDocDir = await getApplicationDocumentsDirectory();
-    final notesDir = Directory(p.join(appDocDir.path, 'notes'));
+    final compartment = (profileId != null && profileId.isNotEmpty) ? profileId : 'default';
+    final notesDir = Directory(p.join(appDocDir.path, 'profiles', compartment, 'notes'));
     if (!await notesDir.exists()) {
       await notesDir.create(recursive: true);
     }
     return notesDir;
   }
 
-  /// Returns the sync base snapshot directory (`appDocDir/.sync_base/`),
-  /// creating it if it does not already exist.
-  Future<Directory> getSyncBaseDir() async {
+  /// Returns the sync base snapshot directory for [profileId]
+  /// (`appDocDir/profiles/<profileId>/.sync_base/`), creating it if it does not exist.
+  /// If [profileId] is null or empty, falls back to `'default'`.
+  Future<Directory> getSyncBaseDir({String? profileId}) async {
     final appDocDir = await getApplicationDocumentsDirectory();
-    final syncBaseDir = Directory(p.join(appDocDir.path, '.sync_base'));
+    final compartment = (profileId != null && profileId.isNotEmpty) ? profileId : 'default';
+    final syncBaseDir = Directory(p.join(appDocDir.path, 'profiles', compartment, '.sync_base'));
     if (!await syncBaseDir.exists()) {
       await syncBaseDir.create(recursive: true);
     }
     return syncBaseDir;
   }
 
-  /// Reads the plain markdown text of a local note from `notes/[filename]`.
+  /// Reads the plain markdown text of a local note from `profiles/<profileId>/notes/[filename]`.
   /// Returns `null` if the file does not exist.
-  Future<String?> readLocalFile(String filename) async {
-    final dir = await getNotesDir();
+  Future<String?> readLocalFile(String filename, {String? profileId}) async {
+    final dir = await getNotesDir(profileId: profileId);
     final file = File(p.join(dir.path, filename));
     if (await file.exists()) {
       return file.readAsString();
@@ -301,9 +409,9 @@ class LocalDbService {
     return null;
   }
 
-  /// Writes [content] to `notes/[filename]` as plain markdown.
-  Future<File> writeLocalFile(String filename, String content) async {
-    final dir = await getNotesDir();
+  /// Writes [content] to `profiles/<profileId>/notes/[filename]` as plain markdown.
+  Future<File> writeLocalFile(String filename, String content, {String? profileId}) async {
+    final dir = await getNotesDir(profileId: profileId);
     final file = File(p.join(dir.path, filename));
     if (!await file.parent.exists()) {
       await file.parent.create(recursive: true);
@@ -311,19 +419,19 @@ class LocalDbService {
     return file.writeAsString(content, flush: true);
   }
 
-  /// Deletes `notes/[filename]` if it exists.
-  Future<void> deleteLocalFile(String filename) async {
-    final dir = await getNotesDir();
+  /// Deletes `profiles/<profileId>/notes/[filename]` if it exists.
+  Future<void> deleteLocalFile(String filename, {String? profileId}) async {
+    final dir = await getNotesDir(profileId: profileId);
     final file = File(p.join(dir.path, filename));
     if (await file.exists()) {
       await file.delete();
     }
   }
 
-  /// Reads the plain markdown text of a base snapshot from `.sync_base/[filename]`.
+  /// Reads the plain markdown text of a base snapshot from `profiles/<profileId>/.sync_base/[filename]`.
   /// Returns `null` if the file does not exist.
-  Future<String?> readBaseFile(String filename) async {
-    final dir = await getSyncBaseDir();
+  Future<String?> readBaseFile(String filename, {String? profileId}) async {
+    final dir = await getSyncBaseDir(profileId: profileId);
     final file = File(p.join(dir.path, filename));
     if (await file.exists()) {
       return file.readAsString();
@@ -331,9 +439,9 @@ class LocalDbService {
     return null;
   }
 
-  /// Writes [content] to `.sync_base/[filename]` as the last known sync baseline.
-  Future<File> writeBaseFile(String filename, String content) async {
-    final dir = await getSyncBaseDir();
+  /// Writes [content] to `profiles/<profileId>/.sync_base/[filename]` as the last known sync baseline.
+  Future<File> writeBaseFile(String filename, String content, {String? profileId}) async {
+    final dir = await getSyncBaseDir(profileId: profileId);
     final file = File(p.join(dir.path, filename));
     if (!await file.parent.exists()) {
       await file.parent.create(recursive: true);
@@ -341,13 +449,47 @@ class LocalDbService {
     return file.writeAsString(content, flush: true);
   }
 
-  /// Deletes `.sync_base/[filename]` if it exists.
-  Future<void> deleteBaseFile(String filename) async {
-    final dir = await getSyncBaseDir();
+  /// Deletes `profiles/<profileId>/.sync_base/[filename]` if it exists.
+  Future<void> deleteBaseFile(String filename, {String? profileId}) async {
+    final dir = await getSyncBaseDir(profileId: profileId);
     final file = File(p.join(dir.path, filename));
     if (await file.exists()) {
       await file.delete();
     }
+  }
+
+  /// Migrates legacy uncompartmentalized files from `appDocDir/notes/` to `appDocDir/profiles/<targetProfileId>/notes/`
+  Future<void> migrateLegacyFilesIfNeeded(String targetProfileId) async {
+    try {
+      final appDocDir = await getApplicationDocumentsDirectory();
+      final legacyNotesDir = Directory(p.join(appDocDir.path, 'notes'));
+      if (await legacyNotesDir.exists()) {
+        final targetDir = await getNotesDir(profileId: targetProfileId);
+        await for (final entity in legacyNotesDir.list()) {
+          if (entity is File && entity.path.endsWith('.md')) {
+            final fileName = p.basename(entity.path);
+            final destFile = File(p.join(targetDir.path, fileName));
+            if (!await destFile.exists()) {
+              await entity.copy(destFile.path);
+            }
+          }
+        }
+      }
+
+      final legacyBaseDir = Directory(p.join(appDocDir.path, '.sync_base'));
+      if (await legacyBaseDir.exists()) {
+        final targetBaseDir = await getSyncBaseDir(profileId: targetProfileId);
+        await for (final entity in legacyBaseDir.list()) {
+          if (entity is File && entity.path.endsWith('.md')) {
+            final fileName = p.basename(entity.path);
+            final destFile = File(p.join(targetBaseDir.path, fileName));
+            if (!await destFile.exists()) {
+              await entity.copy(destFile.path);
+            }
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   /// Closes the database connection if open.

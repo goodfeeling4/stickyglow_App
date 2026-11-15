@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:sticky_notes_ssh/models/ssh_profile.dart';
+import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/background_sync_manager.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
@@ -24,6 +25,8 @@ class SettingsViewModel extends ChangeNotifier {
   final SshSyncService _sshSyncService;
 
   List<SshProfile> _profiles = const <SshProfile>[];
+  String? _activeProfileId;
+  List<StickyNote> _syncedNotes = const <StickyNote>[];
   bool _isLoading = false;
   String? _testResult;
   bool _isTesting = false;
@@ -31,6 +34,23 @@ class SettingsViewModel extends ChangeNotifier {
 
   /// Configured SSH profiles sorted by priority (lowest integer = highest priority).
   List<SshProfile> get profiles => _profiles;
+
+  /// ID of the currently selected active profile.
+  String? get activeProfileId => _activeProfileId;
+
+  /// The active [SshProfile] instance, or `null` if none configured.
+  SshProfile? get activeProfile {
+    if (_profiles.isEmpty) return null;
+    if (_activeProfileId != null) {
+      for (final p in _profiles) {
+        if (p.id == _activeProfileId) return p;
+      }
+    }
+    return _profiles.first;
+  }
+
+  /// List of notes/files stored in the currently active machine's isolated compartment.
+  List<StickyNote> get syncedNotes => _syncedNotes;
 
   /// Whether profiles are actively loading from the database.
   bool get isLoading => _isLoading;
@@ -45,7 +65,7 @@ class SettingsViewModel extends ChangeNotifier {
   bool get autoSyncEnabled => _autoSyncEnabled;
 
   /// Loads all registered SSH profiles from SQLite ordered by priority,
-  /// loads the auto-sync preference, and updates listeners.
+  /// loads the active profile and its compartment notes, and updates listeners.
   Future<void> loadProfiles() async {
     _isLoading = true;
     notifyListeners();
@@ -53,14 +73,89 @@ class SettingsViewModel extends ChangeNotifier {
     try {
       _profiles = await _localDbService.getAllProfiles();
       _autoSyncEnabled = await _secureStorageService.getAutoSyncEnabled();
+
+      var savedActiveId = await _secureStorageService.getActiveProfileId();
+      if (_profiles.isNotEmpty) {
+        final matches = _profiles.any((p) => p.id == savedActiveId);
+        if (!matches) {
+          savedActiveId = _profiles.first.id;
+          await _secureStorageService.saveActiveProfileId(savedActiveId);
+        }
+      } else {
+        savedActiveId = null;
+      }
+      _activeProfileId = savedActiveId;
+
+      if (_activeProfileId != null) {
+        _syncedNotes = await _localDbService.getAllNotes(profileId: _activeProfileId);
+      } else {
+        _syncedNotes = const <StickyNote>[];
+      }
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
+  /// Sets the active machine profile, loads its compartment files, and saves preference.
+  Future<void> setActiveProfile(String profileId) async {
+    if (_activeProfileId == profileId) return;
+    _activeProfileId = profileId;
+    await _secureStorageService.saveActiveProfileId(profileId);
+    _syncedNotes = await _localDbService.getAllNotes(profileId: profileId);
+    notifyListeners();
+  }
+
+  /// Reloads the synced files list for the currently active profile.
+  Future<void> refreshSyncedNotes() async {
+    if (_activeProfileId != null) {
+      _syncedNotes = await _localDbService.getAllNotes(profileId: _activeProfileId);
+      notifyListeners();
+    }
+  }
+
+  /// Adds a new directory or file path to [profileId] and updates git initialization.
+  Future<void> addRemotePath(String profileId, String path) async {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) return;
+
+    final profile = await _localDbService.getProfileById(profileId);
+    if (profile == null) return;
+
+    final currentPaths = List<String>.from(profile.allRemotePaths);
+    if (!currentPaths.contains(trimmed)) {
+      currentPaths.add(trimmed);
+      final updated = profile.copyWith(
+        remotePaths: currentPaths,
+        remoteDir: currentPaths.first,
+      );
+      await _localDbService.updateProfile(updated);
+      await loadProfiles();
+      unawaited(_sshSyncService.initializeDirectoryAndSync(updated));
+    }
+  }
+
+  /// Removes a remote path from [profileId].
+  Future<void> removeRemotePath(String profileId, String path) async {
+    final profile = await _localDbService.getProfileById(profileId);
+    if (profile == null) return;
+
+    final currentPaths = List<String>.from(profile.allRemotePaths);
+    currentPaths.remove(path);
+    if (currentPaths.isEmpty) {
+      currentPaths.add('~/sticky-notes');
+    }
+
+    final updated = profile.copyWith(
+      remotePaths: currentPaths,
+      remoteDir: currentPaths.first,
+    );
+    await _localDbService.updateProfile(updated);
+    await loadProfiles();
+  }
+
   /// Saves a new [profile] to SQLite, stores its [privateKeyPem] in secure storage,
-  /// reloads the profile list, and immediately runs SSH git init & sync.
+  /// sets it as active if it's the first profile, reloads, and runs SSH git init & sync.
   Future<void> addProfile(SshProfile profile, String privateKeyPem) async {
     await _localDbService.insertProfile(profile);
     await _secureStorageService.savePrivateKey(profile.id, privateKeyPem);
@@ -69,6 +164,10 @@ class SettingsViewModel extends ChangeNotifier {
         profile.privateKeyId,
         privateKeyPem,
       );
+    }
+    if (_activeProfileId == null || _profiles.isEmpty) {
+      _activeProfileId = profile.id;
+      await _secureStorageService.saveActiveProfileId(profile.id);
     }
     await loadProfiles();
     unawaited(_sshSyncService.initializeDirectoryAndSync(profile));
@@ -98,13 +197,18 @@ class SettingsViewModel extends ChangeNotifier {
     unawaited(_sshSyncService.initializeDirectoryAndSync(profile));
   }
 
-  /// Deletes the profile matching [id] from SQLite and purges its keys from secure storage.
+  /// Deletes the profile matching [id] from SQLite, purges its compartment and keys.
   Future<void> deleteProfile(String id) async {
     final profile = await _localDbService.getProfileById(id);
+    await _localDbService.deleteNotesByProfile(id);
     await _localDbService.deleteProfile(id);
     await _secureStorageService.deletePrivateKey(id);
     if (profile != null && profile.privateKeyId.isNotEmpty) {
       await _secureStorageService.deletePrivateKey(profile.privateKeyId);
+    }
+    if (_activeProfileId == id) {
+      _activeProfileId = null;
+      await _secureStorageService.deleteActiveProfileId();
     }
     await loadProfiles();
   }

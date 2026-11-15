@@ -129,7 +129,7 @@ class BackgroundSyncManager {
       final result = await syncService.syncAll();
 
       if (result.hasConflicts) {
-        final conflictNotes = await localDb.getConflictNotes();
+        final conflictNotes = await localDb.getConflictNotes(profileId: reachable.id);
         if (conflictNotes.isNotEmpty) {
           for (final note in conflictNotes) {
             await notificationService.showConflictAlert(note.filename);

@@ -170,53 +170,83 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
   try {
     client = await SshSyncService._connectWithKey(profile, params.privateKeyPem);
     sftp = await client.sftp();
-    final remoteDir = await SshSyncService._resolveRemoteDir(client, profile.remoteDir);
+    final remoteMdFiles = <String, String>{};
+    final remoteFileFullPaths = <String, String>{};
+    final remoteConflictFiles = <String, List<String>>{};
+    final configuredDirs = <String>[];
+    String primaryRemoteDir = '';
 
-    // Single-roundtrip remote prep, git auto-commit, and sha256 batch manifest
-    final batchCommand = 'mkdir -p "$remoteDir" && '
-        'cd "$remoteDir" && '
-        '(git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
-        '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
-        '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local") && '
-        'git add -A && '
-        '(git diff --cached --quiet || git commit -m "Laptop auto-commit \$(date -Iseconds)") && '
-        'find . -type f -name "*.md" -not -path "*/.*" -exec sha256sum {} +';
+    for (final configuredPath in profile.allRemotePaths) {
+      final resolved = await SshSyncService._resolveRemoteDir(client, configuredPath);
+      if (resolved.endsWith('.md')) {
+        // Individual markdown file
+        final parentDir = p.dirname(resolved);
+        try {
+          await client.run('mkdir -p "$parentDir"');
+          final outBytes = await client.run('sha256sum "$resolved" 2>/dev/null || true');
+          final outStr = utf8.decode(outBytes).trim();
+          if (outStr.isNotEmpty && outStr.length >= 64) {
+            final hash = outStr.substring(0, 64).trim();
+            final filename = p.basename(resolved);
+            remoteMdFiles[filename] = hash;
+            remoteFileFullPaths[filename] = resolved;
+          }
+        } catch (_) {}
+      } else {
+        // Remote notes directory
+        if (primaryRemoteDir.isEmpty) {
+          primaryRemoteDir = resolved;
+        }
+        configuredDirs.add(resolved);
 
-    var findOutput = '';
-    try {
-      final outBytes = await client.run(batchCommand);
-      findOutput = utf8.decode(outBytes, allowMalformed: true);
-    } catch (e) {
-      errors.add('Failed to execute remote batch command: $e');
+        final batchCommand = 'mkdir -p "$resolved" && '
+            'cd "$resolved" && '
+            '(git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
+            '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
+            '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local") && '
+            'git add -A && '
+            '(git diff --cached --quiet || git commit -m "Laptop auto-commit \$(date -Iseconds)") && '
+            'find . -type f -name "*.md" -not -path "*/.*" -exec sha256sum {} +';
+
+        try {
+          final outBytes = await client.run(batchCommand);
+          final findOutput = utf8.decode(outBytes, allowMalformed: true);
+          for (final rawLine in findOutput.split('\n')) {
+            final line = rawLine.trim();
+            if (line.isEmpty) continue;
+            final spaceIdx = line.indexOf(' ');
+            if (spaceIdx < 64) continue;
+            final hash = line.substring(0, spaceIdx).trim();
+            var filePath = line.substring(spaceIdx + 1).trim();
+            if (filePath.startsWith('*')) {
+              filePath = filePath.substring(1).trim();
+            }
+            if (filePath.startsWith('./')) {
+              filePath = filePath.substring(2);
+            }
+            if (p.style == p.Style.windows) {
+              filePath = filePath.replaceAll('\\', '/');
+            }
+
+            if (filePath.contains('.conflict-')) {
+              final conflictIdx = filePath.indexOf('.conflict-');
+              final baseName = '${filePath.substring(0, conflictIdx)}.md';
+              remoteConflictFiles.putIfAbsent(baseName, () => <String>[]).add(filePath);
+            } else if (filePath.endsWith('.md')) {
+              remoteMdFiles[filePath] = hash;
+              remoteFileFullPaths[filePath] = '$resolved/$filePath';
+            }
+          }
+        } catch (e) {
+          errors.add('Failed to execute remote batch command for $resolved: $e');
+        }
+      }
     }
 
-    // Parse remote sha256 manifest
-    final remoteMdFiles = <String, String>{};
-    final remoteConflictFiles = <String, List<String>>{};
-    for (final rawLine in findOutput.split('\n')) {
-      final line = rawLine.trim();
-      if (line.isEmpty) continue;
-      final spaceIdx = line.indexOf(' ');
-      if (spaceIdx < 64) continue;
-      final hash = line.substring(0, spaceIdx).trim();
-      var filePath = line.substring(spaceIdx + 1).trim();
-      if (filePath.startsWith('*')) {
-        filePath = filePath.substring(1).trim();
-      }
-      if (filePath.startsWith('./')) {
-        filePath = filePath.substring(2);
-      }
-      if (p.style == p.Style.windows) {
-        filePath = filePath.replaceAll('\\', '/');
-      }
-
-      if (filePath.contains('.conflict-')) {
-        final conflictIdx = filePath.indexOf('.conflict-');
-        final baseName = '${filePath.substring(0, conflictIdx)}.md';
-        remoteConflictFiles.putIfAbsent(baseName, () => <String>[]).add(filePath);
-      } else if (filePath.endsWith('.md')) {
-        remoteMdFiles[filePath] = hash;
-      }
+    if (primaryRemoteDir.isEmpty) {
+      primaryRemoteDir = configuredDirs.isNotEmpty
+          ? configuredDirs.first
+          : await SshSyncService._resolveRemoteDir(client, profile.remoteDir);
     }
 
     // Map local notes
@@ -275,11 +305,20 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
       ...baseFileHashes.keys,
     };
 
+    final remoteDir = primaryRemoteDir;
+
     for (final filename in allFilenames) {
       try {
         final isRemote = remoteMdFiles.containsKey(filename);
         final isLocal = localNotesMap.containsKey(filename);
         final isBase = baseFileHashes.containsKey(filename);
+
+        final remoteFilePath = remoteFileFullPaths[filename] ??
+            (localNotesMap[filename]?.remotePath != null &&
+                    localNotesMap[filename]!.remotePath!.isNotEmpty
+                ? localNotesMap[filename]!.remotePath!
+                : '$remoteDir/$filename');
+        final fileRemoteDir = p.dirname(remoteFilePath);
 
         final localFile = File(p.join(params.notesDirPath, filename));
         final baseFile = File(p.join(params.syncBaseDirPath, filename));
@@ -306,7 +345,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
           if (isRemote) {
             try {
               recentlyWrittenFiles.add(filename);
-              await sftp.remove('$remoteDir/$filename');
+              await sftp.remove(remoteFilePath);
               remoteHasChanges = true;
               deleted++;
             } catch (e) {
@@ -327,7 +366,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               : localNote.content;
           await SshSyncService._writeRemoteFile(
             sftp,
-            '$remoteDir/$filename',
+            remoteFilePath,
             content,
             client: client,
           );
@@ -338,6 +377,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
           await baseFile.writeAsString(content, flush: true);
           notesToUpdate.add(
             localNote.copyWith(
+              profileId: profile.id,
+              remotePath: remoteFilePath,
               syncStatus: SyncStatus.synced,
               lastSyncedAt: DateTime.now(),
               clearConflict: true,
@@ -350,7 +391,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
 
         // 3. New remote-only note (pull to phone)
         if (isRemote && !isLocal && !isBase) {
-          final content = await SshSyncService._readRemoteFile(sftp, '$remoteDir/$filename');
+          final content = await SshSyncService._readRemoteFile(sftp, remoteFilePath);
           if (!localFile.parent.existsSync()) {
             await localFile.parent.create(recursive: true);
           }
@@ -364,6 +405,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
           final now = DateTime.now();
           final newNote = StickyNote(
             id: const Uuid().v4(),
+            profileId: profile.id,
+            remotePath: remoteFilePath,
             filename: filename,
             title: title,
             content: content,
@@ -393,6 +436,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
                 localNote.conflictRemoteContent != null) {
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   syncStatus: SyncStatus.synced,
                   lastSyncedAt: DateTime.now(),
                   clearConflict: true,
@@ -401,7 +446,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             }
             if (await SshSyncService._cleanupRemoteConflictFiles(
               sftp,
-              remoteDir,
+              fileRemoteDir,
               filename,
               remoteConflictFiles,
               recentlyWrittenFiles,
@@ -424,6 +469,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
                 localNote.conflictRemoteContent != null) {
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   syncStatus: SyncStatus.synced,
                   lastSyncedAt: DateTime.now(),
                   clearConflict: true,
@@ -432,7 +479,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             }
             if (await SshSyncService._cleanupRemoteConflictFiles(
               sftp,
-              remoteDir,
+              fileRemoteDir,
               filename,
               remoteConflictFiles,
               recentlyWrittenFiles,
@@ -444,7 +491,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
 
           // 4c. Fast-Forward Pull (Laptop changed, Phone unchanged)
           if (baseHash != null && localHash == baseHash && remoteHash != baseHash) {
-            final remoteContent = await SshSyncService._readRemoteFile(sftp, '$remoteDir/$filename');
+            final remoteContent = await SshSyncService._readRemoteFile(sftp, remoteFilePath);
             if (!localFile.parent.existsSync()) {
               await localFile.parent.create(recursive: true);
             }
@@ -456,6 +503,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             final title = SshSyncService._deriveTitle(remoteContent, filename);
             notesToUpdate.add(
               localNote.copyWith(
+                profileId: profile.id,
+                remotePath: remoteFilePath,
                 title: title,
                 content: remoteContent,
                 syncStatus: SyncStatus.synced,
@@ -465,7 +514,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             );
             if (await SshSyncService._cleanupRemoteConflictFiles(
               sftp,
-              remoteDir,
+              fileRemoteDir,
               filename,
               remoteConflictFiles,
               recentlyWrittenFiles,
@@ -483,7 +532,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
                 : localNote.content;
             await SshSyncService._writeRemoteFile(
               sftp,
-              '$remoteDir/$filename',
+              remoteFilePath,
               localContent,
               client: client,
             );
@@ -494,6 +543,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             await baseFile.writeAsString(localContent, flush: true);
             notesToUpdate.add(
               localNote.copyWith(
+                profileId: profile.id,
+                remotePath: remoteFilePath,
                 syncStatus: SyncStatus.synced,
                 lastSyncedAt: DateTime.now(),
                 clearConflict: true,
@@ -501,7 +552,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             );
             await SshSyncService._cleanupRemoteConflictFiles(
               sftp,
-              remoteDir,
+              fileRemoteDir,
               filename,
               remoteConflictFiles,
               recentlyWrittenFiles,
@@ -515,7 +566,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
           final localContent = (await localFile.exists())
               ? await localFile.readAsString()
               : localNote.content;
-          final remoteContent = await SshSyncService._readRemoteFile(sftp, '$remoteDir/$filename');
+          final remoteContent = await SshSyncService._readRemoteFile(sftp, remoteFilePath);
           final baseContent = (await baseFile.exists())
               ? await baseFile.readAsString()
               : null;
@@ -538,6 +589,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               final title = SshSyncService._deriveTitle(remoteContent, filename);
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   title: title,
                   content: remoteContent,
                   syncStatus: SyncStatus.synced,
@@ -547,7 +600,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               );
               if (await SshSyncService._cleanupRemoteConflictFiles(
                 sftp,
-                remoteDir,
+                fileRemoteDir,
                 filename,
                 remoteConflictFiles,
                 recentlyWrittenFiles,
@@ -575,6 +628,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
                   localNote.conflictRemoteContent != null) {
                 notesToUpdate.add(
                   localNote.copyWith(
+                    profileId: profile.id,
+                    remotePath: remoteFilePath,
                     syncStatus: SyncStatus.synced,
                     lastSyncedAt: DateTime.now(),
                     clearConflict: true,
@@ -583,7 +638,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               }
               if (await SshSyncService._cleanupRemoteConflictFiles(
                 sftp,
-                remoteDir,
+                fileRemoteDir,
                 filename,
                 remoteConflictFiles,
                 recentlyWrittenFiles,
@@ -603,6 +658,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               final title = SshSyncService._deriveTitle(content, filename);
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   title: title,
                   content: content,
                   syncStatus: SyncStatus.synced,
@@ -612,7 +669,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               );
               if (await SshSyncService._cleanupRemoteConflictFiles(
                 sftp,
-                remoteDir,
+                fileRemoteDir,
                 filename,
                 remoteConflictFiles,
                 recentlyWrittenFiles,
@@ -624,7 +681,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             case FastForwardPush():
               await SshSyncService._writeRemoteFile(
                 sftp,
-                '$remoteDir/$filename',
+                remoteFilePath,
                 localContent,
                 client: client,
               );
@@ -635,6 +692,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               await baseFile.writeAsString(localContent, flush: true);
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   syncStatus: SyncStatus.synced,
                   lastSyncedAt: DateTime.now(),
                   clearConflict: true,
@@ -642,7 +701,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               );
               await SshSyncService._cleanupRemoteConflictFiles(
                 sftp,
-                remoteDir,
+                fileRemoteDir,
                 filename,
                 remoteConflictFiles,
                 recentlyWrittenFiles,
@@ -653,7 +712,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
             case AutoMerged(:final mergedContent):
               await SshSyncService._writeRemoteFile(
                 sftp,
-                '$remoteDir/$filename',
+                remoteFilePath,
                 mergedContent,
                 client: client,
               );
@@ -669,6 +728,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               final title = SshSyncService._deriveTitle(mergedContent, filename);
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   title: title,
                   content: mergedContent,
                   syncStatus: SyncStatus.synced,
@@ -678,7 +739,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               );
               await SshSyncService._cleanupRemoteConflictFiles(
                 sftp,
-                remoteDir,
+                fileRemoteDir,
                 filename,
                 remoteConflictFiles,
                 recentlyWrittenFiles,
@@ -696,7 +757,7 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
                 );
                 await SshSyncService._writeRemoteFile(
                   sftp,
-                  '$remoteDir/$conflictFilename',
+                  '$fileRemoteDir/$conflictFilename',
                   conflictContent,
                   client: client,
                 );
@@ -707,6 +768,8 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
               }
               notesToUpdate.add(
                 localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
                   syncStatus: SyncStatus.conflict,
                   conflictRemoteContent: remoteContent,
                 ),
@@ -726,10 +789,11 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
       if (localNote != null &&
           localNote.syncStatus == SyncStatus.synced &&
           localNote.conflictRemoteContent == null) {
+        final conflictDir = p.dirname(remoteFileFullPaths[baseName] ?? '$primaryRemoteDir/$baseName');
         for (final file in entry.value) {
           try {
             recentlyWrittenFiles.add(file);
-            await sftp.remove('$remoteDir/$file');
+            await sftp.remove('$conflictDir/$file');
             remoteHasChanges = true;
           } catch (_) {}
         }
@@ -738,12 +802,14 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
 
     // Remote Git commit if phone made changes
     if (remoteHasChanges) {
-      try {
-        await client.run(
-          'cd "$remoteDir" && git add -A && (git diff --cached --quiet || git commit -m "Mobile sync \$(date -Iseconds)")',
-        );
-      } catch (e) {
-        errors.add('Failed to commit remote changes via Git: $e');
+      for (final dir in configuredDirs) {
+        try {
+          await client.run(
+            'cd "$dir" && git add -A && (git diff --cached --quiet || git commit -m "Mobile sync \$(date -Iseconds)")',
+          );
+        } catch (e) {
+          errors.add('Failed to commit remote changes in $dir via Git: $e');
+        }
       }
     }
   } catch (e) {
@@ -789,36 +855,49 @@ class SshSyncService {
 
   final Map<String, DateTime> _recentlyWrittenByApp = <String, DateTime>{};
 
-  /// Loads all configured profiles sorted by priority and probes each
-  /// in parallel using TCP sockets with a 1500ms timeout.
+  /// Probes [profile] using a TCP socket with a 1500ms timeout.
   ///
-  /// Returns the first responsive [SshProfile], or `null` if none respond.
-  Future<SshProfile?> findReachableProfile() async {
-    final profiles = await _localDbService.getAllProfiles();
-    if (profiles.isEmpty) return null;
-
-    final completer = Completer<SshProfile?>();
-    var pendingCount = profiles.length;
-
-    for (final profile in profiles) {
-      Socket.connect(
+  /// Returns [profile] if responsive, or `null` if unreachable.
+  Future<SshProfile?> probeProfile(SshProfile profile) async {
+    try {
+      final socket = await Socket.connect(
         profile.host,
         profile.port,
         timeout: const Duration(milliseconds: 1500),
-      ).then((socket) {
-        socket.destroy();
-        if (!completer.isCompleted) {
-          completer.complete(profile);
-        }
-      }).catchError((_) {
-        pendingCount--;
-        if (pendingCount == 0 && !completer.isCompleted) {
-          completer.complete(null);
-        }
-      });
+      );
+      socket.destroy();
+      return profile;
+    } catch (_) {
+      return null;
     }
+  }
 
-    return completer.future;
+  /// Retrieves the current active profile selected by the user.
+  ///
+  /// If no profile is explicitly marked active, defaults to the first profile
+  /// in SQLite and persists it as active. Returns `null` if no profiles exist.
+  Future<SshProfile?> getActiveProfile() async {
+    final activeId = await _secureStorageService.getActiveProfileId();
+    if (activeId != null && activeId.isNotEmpty) {
+      final profile = await _localDbService.getProfileById(activeId);
+      if (profile != null) return profile;
+    }
+    final all = await _localDbService.getAllProfiles();
+    if (all.isEmpty) return null;
+    final fallback = all.first;
+    await _secureStorageService.saveActiveProfileId(fallback.id);
+    return fallback;
+  }
+
+  /// Probes ONLY the current active SSH profile.
+  ///
+  /// Strictly respects user profile selection: if the active profile is
+  /// unreachable, returns `null` (offline) and NEVER automatically hops
+  /// or probes other machines.
+  Future<SshProfile?> findReachableProfile() async {
+    final active = await getActiveProfile();
+    if (active == null) return null;
+    return probeProfile(active);
   }
 
   /// Connects to the remote host using [profile] and [keyPem], returning an authenticated [SSHClient].
@@ -910,10 +989,25 @@ class SshSyncService {
 
   /// Executes full bidirectional sync between local notes and the remote laptop Git repo
   /// inside a background isolate via [compute], preventing UI frame drops.
-  Future<SyncResult> syncAll() async {
+  ///
+  /// Synchronizes ONLY the active profile (or [profileId] if specified).
+  /// If the machine is unreachable, returns an empty result without auto-hopping.
+  Future<SyncResult> syncAll({String? profileId}) async {
     SshProfile? profile;
     try {
-      profile = await findReachableProfile();
+      if (profileId != null && profileId.isNotEmpty) {
+        profile = await _localDbService.getProfileById(profileId);
+      } else {
+        profile = await getActiveProfile();
+      }
+
+      if (profile != null) {
+        final reachable = await probeProfile(profile);
+        if (reachable == null) {
+          // Machine is unreachable: strictly offline, do not jump to other profiles!
+          return const SyncResult.empty();
+        }
+      }
     } catch (e) {
       return SyncResult(
         pulled: 0,
@@ -921,7 +1015,7 @@ class SshSyncService {
         autoMerged: 0,
         conflicts: 0,
         deleted: 0,
-        errors: <String>['Failed to probe reachable profiles: $e'],
+        errors: <String>['Failed to probe active profile: $e'],
         connectedProfile: null,
       );
     }
@@ -931,10 +1025,11 @@ class SshSyncService {
     }
 
     try {
+      await _localDbService.migrateLegacyFilesIfNeeded(profile.id);
       final keyPem = await _secureStorageService.getPrivateKey(profile.id);
-      final notesDir = await _localDbService.getNotesDir();
-      final syncBaseDir = await _localDbService.getSyncBaseDir();
-      final localNotes = await _localDbService.getAllNotes();
+      final notesDir = await _localDbService.getNotesDir(profileId: profile.id);
+      final syncBaseDir = await _localDbService.getSyncBaseDir(profileId: profile.id);
+      final localNotes = await _localDbService.getAllNotes(profileId: profile.id);
 
       final params = SyncWorkerParams(
         profile: profile,
@@ -954,12 +1049,18 @@ class SshSyncService {
         _recentlyWrittenByApp[p.basename(file)] = now;
       }
 
-      // Apply SQLite database transactions cleanly on main isolate
+      // Apply SQLite database transactions cleanly on main isolate ensuring profileId
       for (final note in workerResult.notesToInsert) {
-        await _localDbService.insertNote(note);
+        final toSave = note.profileId.isEmpty
+            ? note.copyWith(profileId: profile.id)
+            : note;
+        await _localDbService.insertNote(toSave);
       }
       for (final note in workerResult.notesToUpdate) {
-        await _localDbService.updateNote(note);
+        final toSave = note.profileId.isEmpty
+            ? note.copyWith(profileId: profile.id)
+            : note;
+        await _localDbService.updateNote(toSave);
       }
       for (final id in workerResult.noteIdsToDelete) {
         await _localDbService.deleteNote(id);
@@ -1069,18 +1170,26 @@ class SshSyncService {
       final gitBytes = await client.run('git --version');
       final gitVersion = utf8.decode(gitBytes).trim();
 
-      // 4. SFTP directory verification
+      // 4. SFTP paths verification
       final sftp = await client.sftp();
-      final remoteDir = await _resolveRemoteDir(client, profile.remoteDir);
-      await client.run('mkdir -p "$remoteDir"');
-      final entries = await sftp.listdir(remoteDir);
+      final pathsSummary = <String>[];
+      for (final pth in profile.allRemotePaths) {
+        final resolved = await _resolveRemoteDir(client, pth);
+        if (resolved.endsWith('.md')) {
+          pathsSummary.add('• File: $resolved');
+        } else {
+          await client.run('mkdir -p "$resolved"');
+          final entries = await sftp.listdir(resolved);
+          pathsSummary.add('• Dir: $resolved (${entries.length} items found)');
+        }
+      }
       sftp.close();
 
       return 'Connection successful!\n'
           '• Host: ${profile.host}:${profile.port}\n'
           '• User: ${profile.username}\n'
           '• Git: $gitVersion\n'
-          '• Remote Directory: $remoteDir (${entries.length} items found)';
+          '${pathsSummary.join('\n')}';
     } catch (e) {
       return 'Connection test failed: $e';
     } finally {
@@ -1206,28 +1315,29 @@ class SshSyncService {
     }
   }
 
-  /// Ensures that the remote directory for [profile] exists and has a Git repo initialized,
+  /// Ensures that the remote directories for [profile] exist and have Git initialized,
   /// then triggers an immediate bidirectional sync transaction.
   Future<SyncResult> initializeDirectoryAndSync(SshProfile profile) async {
     SSHClient? client;
     try {
       client = await _connectClient(profile);
-      final remoteDir = await _resolveRemoteDir(client, profile.remoteDir);
-
-      // Create remote directory and ensure Git is initialized
-      await client.run(
-        'mkdir -p "$remoteDir" && '
-        'cd "$remoteDir" && (git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
-        '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
-        '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local")',
-      );
+      for (final pth in profile.allRemotePaths) {
+        final resolved = await _resolveRemoteDir(client, pth);
+        final targetDir = resolved.endsWith('.md') ? p.dirname(resolved) : resolved;
+        await client.run(
+          'mkdir -p "$targetDir" && '
+          'cd "$targetDir" && (git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
+          '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
+          '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local")',
+        );
+      }
     } catch (e) {
       debugPrint('Failed to initialize Git directory on remote: $e');
     } finally {
       client?.close();
     }
 
-    return syncAll();
+    return syncAll(profileId: profile.id);
   }
 
   SSHClient? _watcherClient;
@@ -1248,8 +1358,10 @@ class SshSyncService {
   }) async {
     if (_isWatching) return;
 
-    final profile = await findReachableProfile();
+    final profile = await getActiveProfile();
     if (profile == null) return;
+    final reachable = await probeProfile(profile);
+    if (reachable == null) return;
 
     try {
       _watcherClient = await _connectClient(profile);

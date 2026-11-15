@@ -21,8 +21,11 @@ class FakeLocalDbService implements LocalDbService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
-  Future<List<StickyNote>> getAllNotes() async {
-    final list = notes.values.toList();
+  Future<List<StickyNote>> getAllNotes({String? profileId}) async {
+    var list = notes.values.toList();
+    if (profileId != null && profileId.isNotEmpty) {
+      list = list.where((n) => n.profileId == profileId).toList();
+    }
     list.sort((a, b) {
       if (a.isPinned != b.isPinned) {
         return a.isPinned ? -1 : 1;
@@ -33,10 +36,10 @@ class FakeLocalDbService implements LocalDbService {
   }
 
   @override
-  Future<StickyNote?> getNoteById(String id) async => notes[id];
+  Future<StickyNote?> getNoteById(String id, {String? profileId}) async => notes[id];
 
   @override
-  Future<StickyNote?> getNoteByFilename(String filename) async {
+  Future<StickyNote?> getNoteByFilename(String filename, {String? profileId}) async {
     for (final note in notes.values) {
       if (note.filename == filename) return note;
     }
@@ -62,23 +65,27 @@ class FakeLocalDbService implements LocalDbService {
   }
 
   @override
-  Future<List<StickyNote>> getConflictNotes() async => notes.values
+  Future<List<StickyNote>> getConflictNotes({String? profileId}) async => notes.values
       .where((n) => n.syncStatus == SyncStatus.conflict)
       .toList();
 
   @override
-  Future<File> writeLocalFile(String filename, String content) async {
+  Future<File> writeLocalFile(
+    String filename,
+    String content, {
+    String? profileId,
+  }) async {
     localFiles[filename] = content;
     return File(filename);
   }
 
   @override
-  Future<void> deleteLocalFile(String filename) async {
+  Future<void> deleteLocalFile(String filename, {String? profileId}) async {
     localFiles.remove(filename);
   }
 
   @override
-  Future<void> deleteBaseFile(String filename) async {
+  Future<void> deleteBaseFile(String filename, {String? profileId}) async {
     baseFiles.remove(filename);
   }
 
@@ -109,6 +116,12 @@ class FakeLocalDbService implements LocalDbService {
     profiles.remove(id);
     return 1;
   }
+
+  @override
+  Future<int> deleteNotesByProfile(String profileId) async {
+    notes.removeWhere((id, note) => note.profileId == profileId);
+    return 1;
+  }
 }
 
 class FakeSshSyncService implements SshSyncService {
@@ -135,7 +148,7 @@ class FakeSshSyncService implements SshSyncService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
-  Future<SyncResult> syncAll() async => nextSyncResult;
+  Future<SyncResult> syncAll({String? profileId}) async => nextSyncResult;
 
   @override
   Future<SshProfile?> findReachableProfile() async => nextReachableProfile;
@@ -172,9 +185,23 @@ class FakeSshSyncService implements SshSyncService {
 class FakeSecureStorageService implements SecureStorageService {
   final Map<String, String> keys = <String, String>{};
   bool autoSync = false;
+  String? activeProfileId;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+
+  @override
+  Future<void> saveActiveProfileId(String profileId) async {
+    activeProfileId = profileId;
+  }
+
+  @override
+  Future<String?> getActiveProfileId() async => activeProfileId;
+
+  @override
+  Future<void> deleteActiveProfileId() async {
+    activeProfileId = null;
+  }
 
   @override
   Future<void> savePrivateKey(String profileId, String pemContent) async {
@@ -393,10 +420,12 @@ void main() {
 
   group('EditorViewModel', () {
     late FakeLocalDbService db;
+    late FakeSecureStorageService storage;
     late EditorViewModel vm;
 
     setUp(() {
       db = FakeLocalDbService();
+      storage = FakeSecureStorageService();
     });
 
     tearDown(() {
@@ -417,7 +446,11 @@ void main() {
         updatedAt: now,
       );
 
-      vm = EditorViewModel(localDbService: db, noteId: 'note-1');
+      vm = EditorViewModel(
+        localDbService: db,
+        secureStorageService: storage,
+        noteId: 'note-1',
+      );
       await vm.loadNote();
 
       expect(vm.contentController.text, '# Grocery\n- [ ] Apples');
@@ -430,7 +463,11 @@ void main() {
     });
 
     test('initializes new note and saves', () async {
-      vm = EditorViewModel(localDbService: db, noteId: null);
+      vm = EditorViewModel(
+        localDbService: db,
+        secureStorageService: storage,
+        noteId: null,
+      );
       await vm.loadNote();
 
       expect(vm.note, isNull);
@@ -454,7 +491,11 @@ void main() {
     });
 
     test('switch mode', () {
-      vm = EditorViewModel(localDbService: db, noteId: null);
+      vm = EditorViewModel(
+        localDbService: db,
+        secureStorageService: storage,
+        noteId: null,
+      );
       expect(vm.mode, EditorMode.edit);
       vm.setMode(EditorMode.split);
       expect(vm.mode, EditorMode.split);

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:sticky_notes_ssh/models/ssh_profile.dart';
+import 'package:sticky_notes_ssh/models/sticky_note.dart';
+import 'package:sticky_notes_ssh/screens/note_editor_screen.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/utils/ssh_key_helper.dart';
 import 'package:sticky_notes_ssh/view_models/settings_view_model.dart';
@@ -201,87 +203,20 @@ class _SshSettingsScreenState extends State<SshSettingsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SSH Settings'),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openProfileForm(),
-        icon: const Icon(Icons.add),
-        label: const Text('Add Profile'),
+        title: const Text('SSH & Machine Settings'),
+        actions: <Widget>[
+          IconButton(
+            tooltip: 'Add Machine Profile',
+            icon: const Icon(Icons.add_rounded),
+            onPressed: () => _openProfileForm(),
+          ),
+        ],
       ),
       body: viewModel.isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: <Widget>[
-                // Auto-sync switch tile
-                SwitchListTile(
-                  title: const Text(
-                    'Auto-Sync on Laptop Connect',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  subtitle: const Text(
-                    'Automatically syncs notes when laptop is connected and after note edits.',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                  value: viewModel.autoSyncEnabled,
-                  onChanged: (bool value) async {
-                    await viewModel.toggleAutoSync(value);
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          value
-                              ? 'Auto-Sync enabled! Syncing when laptop connects or notes are edited.'
-                              : 'Auto-Sync disabled.',
-                        ),
-                        duration: const Duration(seconds: 3),
-                      ),
-                    );
-                  },
-                ),
-                const Divider(height: 1),
-
-                // Profiles section header
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: <Widget>[
-                      Text(
-                        'SSH PROFILES (PRIORITY ORDER)',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.8,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      Text(
-                        'Drag to reorder',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: theme.colorScheme.onSurfaceVariant
-                              .withValues(alpha: 0.7),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // Profiles list or empty state
-                Expanded(
-                  child: viewModel.profiles.isEmpty
-                      ? _buildEmptyState()
-                      : ReorderableListView.builder(
-                          padding: const EdgeInsets.only(bottom: 80),
-                          itemCount: viewModel.profiles.length,
-                          onReorder: viewModel.reorderProfiles,
-                          itemBuilder: (context, index) {
-                            final profile = viewModel.profiles[index];
-                            return _buildProfileTile(profile, index);
-                          },
-                        ),
-                ),
-              ],
-            ),
+          : viewModel.profiles.isEmpty
+              ? _buildEmptyState()
+              : _buildMainSettingsContent(context, viewModel, theme),
     );
   }
 
@@ -345,218 +280,689 @@ class _SshSettingsScreenState extends State<SshSettingsScreen> {
     );
   }
 
-  Widget _buildProfileTile(SshProfile profile, int index) {
-    final theme = Theme.of(context);
+  Future<void> _promptAddLocation(SshProfile profile) async {
     final viewModel = context.read<SettingsViewModel>();
+    final controller = TextEditingController(text: '~/sticky-notes/');
 
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Add Sync Location'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              'Enter a directory path (e.g. ~/my-notes) or a specific Markdown file path (e.g. ~/notes/todo.md) on your laptop.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Remote Path',
+                hintText: '~/notes or ~/notes/todo.md',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.folder_open_outlined),
+              ),
+              autofocus: true,
+            ),
+          ],
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogCtx, controller.text.trim()),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      await viewModel.addRemotePath(profile.id, result);
+    }
+  }
+
+  Widget _buildMainSettingsContent(
+    BuildContext context,
+    SettingsViewModel viewModel,
+    ThemeData theme,
+  ) {
+    final activeProfile = viewModel.activeProfile ?? viewModel.profiles.first;
+
+    return RefreshIndicator(
+      onRefresh: () => viewModel.loadProfiles(),
+      child: ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        children: <Widget>[
+          // Section 1: Active Machine Selector Dropdown
+          _buildMachineSelectorCard(context, viewModel, activeProfile, theme),
+          const SizedBox(height: 16),
+
+          // Section 2: Configured Sync Locations (Dirs & Files)
+          _buildLocationsCard(context, viewModel, activeProfile, theme),
+          const SizedBox(height: 16),
+
+          // Section 3: Opened & Synced Files on Laptop (Isolated Compartment)
+          _buildSyncedFilesCard(context, viewModel, activeProfile, theme),
+          const SizedBox(height: 16),
+
+          // Section 4: General Preferences & SSH Tools
+          _buildPreferencesCard(context, viewModel, activeProfile, theme),
+          const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMachineSelectorCard(
+    BuildContext context,
+    SettingsViewModel viewModel,
+    SshProfile activeProfile,
+    ThemeData theme,
+  ) {
     return Card(
-      key: ValueKey<String>(profile.id),
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       elevation: 0.8,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
         ),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () => _openProfileForm(existingProfile: profile),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              // Header Row: Priority Badge + Name + Action Buttons
-              Row(
-                children: <Widget>[
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(
+                  Icons.computer_rounded,
+                  size: 20,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'ACTIVE SSH MACHINE',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '1 ACTIVE AT A TIME',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.onPrimaryContainer,
                     ),
-                    child: Text(
-                      '#${index + 1}',
-                      style: TextStyle(
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Strictly one machine connects at a time. The app will never automatically probe or jump to other machines.',
+              style: TextStyle(
+                fontSize: 12,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // Dropdown Menu Selector
+            InputDecorator(
+              decoration: InputDecoration(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 6,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                labelText: 'Select Connected Laptop / Machine',
+                prefixIcon: const Icon(Icons.laptop_chromebook_rounded),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: activeProfile.id,
+                  icon: const Icon(Icons.arrow_drop_down_rounded),
+                  items: viewModel.profiles.map((SshProfile profile) {
+                    final isCurrent = profile.id == activeProfile.id;
+                    return DropdownMenuItem<String>(
+                      value: profile.id,
+                      child: Row(
+                        children: <Widget>[
+                          Expanded(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  profile.name,
+                                  style: TextStyle(
+                                    fontWeight: isCurrent
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                    fontSize: 14,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  '${profile.username}@${profile.host}:${profile.port}',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                    fontFamily: 'monospace',
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isCurrent)
+                            Icon(
+                              Icons.check_circle_rounded,
+                              size: 16,
+                              color: theme.colorScheme.primary,
+                            ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (String? newId) {
+                    if (newId != null && newId != activeProfile.id) {
+                      viewModel.setActiveProfile(newId);
+                    }
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // Active Machine Action Buttons
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                FilledButton.tonalIcon(
+                  onPressed: () => _testProfile(activeProfile),
+                  icon: const Icon(Icons.network_check_rounded, size: 16),
+                  label: const Text('Test Connection'),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      _openProfileForm(existingProfile: activeProfile),
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  label: const Text('Edit'),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      _startSshCopyIdForProfile(activeProfile),
+                  icon: const Icon(Icons.bolt_rounded, size: 16),
+                  label: const Text('Key Setup'),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Delete Machine',
+                  icon: Icon(
+                    Icons.delete_outline,
+                    color: theme.colorScheme.error,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _confirmDeleteProfile(activeProfile),
+                ),
+              ],
+            ),
+            const Divider(height: 24),
+            Center(
+              child: TextButton.icon(
+                onPressed: () => _openProfileForm(),
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: const Text('Add Another Machine Profile'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocationsCard(
+    BuildContext context,
+    SettingsViewModel viewModel,
+    SshProfile activeProfile,
+    ThemeData theme,
+  ) {
+    final paths = activeProfile.allRemotePaths;
+
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Icon(
+                      Icons.folder_copy_outlined,
+                      size: 20,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'SYNC LOCATIONS (${paths.length})',
+                      style: theme.textTheme.labelMedium?.copyWith(
                         fontWeight: FontWeight.bold,
-                        fontSize: 12,
+                        letterSpacing: 0.8,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+                TextButton.icon(
+                  onPressed: () => _promptAddLocation(activeProfile),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Add Location'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Directories and individual .md files watched on ${activeProfile.name}. All pure markdown files in these locations are synchronized.',
+              style: TextStyle(
+                fontSize: 12,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ...paths.map((String path) {
+              final isSingleFile = path.toLowerCase().endsWith('.md');
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: theme.colorScheme.outlineVariant
+                        .withValues(alpha: 0.5),
+                  ),
+                ),
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      isSingleFile
+                          ? Icons.description_outlined
+                          : Icons.folder_outlined,
+                      size: 18,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            path,
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          Text(
+                            isSingleFile
+                                ? 'Single Markdown File'
+                                : 'Directory (Recursively scans *.md)',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (paths.length > 1)
+                      IconButton(
+                        tooltip: 'Remove location',
+                        icon: const Icon(Icons.close_rounded, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => viewModel.removeRemotePath(
+                          activeProfile.id,
+                          path,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSyncedFilesCard(
+    BuildContext context,
+    SettingsViewModel viewModel,
+    SshProfile activeProfile,
+    ThemeData theme,
+  ) {
+    final notes = viewModel.syncedNotes;
+
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(
+                  Icons.menu_book_rounded,
+                  size: 20,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'OPENED & SYNCED FILES (${notes.length})',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'OFFLINE COMPARTMENT',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.onSecondaryContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Files opened and saved for ${activeProfile.name}. Even if you go offline or switch machines, notes in this compartment remain preserved and accessible.',
+              style: TextStyle(
+                fontSize: 12,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (notes.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest
+                      .withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: <Widget>[
+                    Icon(
+                      Icons.note_add_outlined,
+                      size: 32,
+                      color: theme.colorScheme.onSurfaceVariant
+                          .withValues(alpha: 0.5),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'No files cached for this machine yet.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Tap Sync on the home screen to pull files from your laptop.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: theme.colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              ...notes.map((StickyNote note) {
+                final displayTitle = note.title.trim().isNotEmpty
+                    ? note.title.trim()
+                    : note.filename;
+                final statusColor = switch (note.syncStatus) {
+                  SyncStatus.synced => const Color(0xFF2E7D32),
+                  SyncStatus.pending => const Color(0xFFE65100),
+                  SyncStatus.conflict => const Color(0xFFC62828),
+                };
+                final statusText = switch (note.syncStatus) {
+                  SyncStatus.synced => 'SYNCED',
+                  SyncStatus.pending => 'PENDING',
+                  SyncStatus.conflict => 'CONFLICT',
+                };
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: theme.colorScheme.outlineVariant
+                          .withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 2,
+                    ),
+                    leading: CircleAvatar(
+                      radius: 16,
+                      backgroundColor: theme.colorScheme.primaryContainer,
+                      child: Icon(
+                        Icons.description_outlined,
+                        size: 16,
                         color: theme.colorScheme.onPrimaryContainer,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      profile.name,
+                    title: Text(
+                      displayTitle,
                       style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
                       ),
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  // Quick Test Button
-                  IconButton.filledTonal(
-                    tooltip: 'Test connection',
-                    icon: const Icon(Icons.network_check_rounded, size: 18),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _testProfile(profile),
-                  ),
-                  const SizedBox(width: 2),
-                  // 3-dots Menu for secondary actions
-                  PopupMenuButton<String>(
-                    tooltip: 'More actions',
-                    icon: const Icon(Icons.more_vert),
-                    onSelected: (String action) async {
-                      switch (action) {
-                        case 'edit':
-                          _openProfileForm(existingProfile: profile);
-                        case 'copy_id':
-                          _startSshCopyIdForProfile(profile);
-                        case 'copy_key':
-                          _copyPublicKey(profile);
-                        case 'move_up':
-                          if (index > 0) {
-                            viewModel.reorderProfiles(index, index - 1);
-                          }
-                        case 'move_down':
-                          if (index < viewModel.profiles.length - 1) {
-                            viewModel.reorderProfiles(index, index + 2);
-                          }
-                        case 'delete':
-                          _confirmDeleteProfile(profile);
-                      }
-                    },
-                    itemBuilder: (menuContext) => <PopupMenuEntry<String>>[
-                      const PopupMenuItem<String>(
-                        value: 'edit',
-                        child: ListTile(
-                          dense: true,
-                          leading: Icon(Icons.edit_outlined),
-                          title: Text('Edit Profile'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                      const PopupMenuItem<String>(
-                        value: 'copy_id',
-                        child: ListTile(
-                          dense: true,
-                          leading: Icon(Icons.bolt_rounded),
-                          title: Text('Auto-Setup Key (ssh-copy-id)'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                      const PopupMenuItem<String>(
-                        value: 'copy_key',
-                        child: ListTile(
-                          dense: true,
-                          leading: Icon(Icons.key_rounded),
-                          title: Text('Copy Public Key'),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                      if (index > 0)
-                        const PopupMenuItem<String>(
-                          value: 'move_up',
-                          child: ListTile(
-                            dense: true,
-                            leading: Icon(Icons.arrow_upward_rounded),
-                            title: Text('Move Up in Priority'),
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                        ),
-                      if (index < viewModel.profiles.length - 1)
-                        const PopupMenuItem<String>(
-                          value: 'move_down',
-                          child: ListTile(
-                            dense: true,
-                            leading: Icon(Icons.arrow_downward_rounded),
-                            title: Text('Move Down in Priority'),
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                        ),
-                      const PopupMenuDivider(),
-                      PopupMenuItem<String>(
-                        value: 'delete',
-                        child: ListTile(
-                          dense: true,
-                          leading: Icon(
-                            Icons.delete_outline,
-                            color: theme.colorScheme.error,
-                          ),
-                          title: Text(
-                            'Delete Profile',
-                            style: TextStyle(color: theme.colorScheme.error),
-                          ),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(width: 2),
-                  // Drag handle
-                  ReorderableDragStartListener(
-                    index: index,
-                    child: Padding(
-                      padding: const EdgeInsets.all(4),
-                      child: Icon(
-                        Icons.drag_handle,
-                        color: theme.colorScheme.onSurfaceVariant
-                            .withValues(alpha: 0.6),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // Connection details: Host & Port
-              Row(
-                children: <Widget>[
-                  Icon(
-                    Icons.computer_rounded,
-                    size: 16,
-                    color: theme.colorScheme.primary.withValues(alpha: 0.8),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '${profile.username}@${profile.host}:${profile.port}',
-                      style: const TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              // Directory path
-              Row(
-                children: <Widget>[
-                  Icon(
-                    Icons.folder_outlined,
-                    size: 16,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      profile.remoteDir,
+                    subtitle: Text(
+                      '${note.filename} ${note.remotePath != null ? "• ${note.remotePath}" : ""}',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: 11,
+                        fontFamily: 'monospace',
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: statusColor.withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Text(
+                            statusText,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: statusColor,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.chevron_right, size: 20),
+                      ],
+                    ),
+                    onTap: () async {
+                      await Navigator.push<bool>(
+                        context,
+                        MaterialPageRoute<bool>(
+                          builder: (_) => NoteEditorScreen(
+                            noteId: note.id,
+                            profileId: activeProfile.id,
+                          ),
+                        ),
+                      );
+                      if (context.mounted) {
+                        viewModel.refreshSyncedNotes();
+                      }
+                    },
                   ),
-                ],
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreferencesCard(
+    BuildContext context,
+    SettingsViewModel viewModel,
+    SshProfile activeProfile,
+    ThemeData theme,
+  ) {
+    return Card(
+      elevation: 0.8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'SYNC PREFERENCES',
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'Auto-Sync on Laptop Connect',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+              ),
+              subtitle: const Text(
+                'Syncs active machine when network connects and after editing notes.',
+                style: TextStyle(fontSize: 12),
+              ),
+              value: viewModel.autoSyncEnabled,
+              onChanged: (bool value) async {
+                await viewModel.toggleAutoSync(value);
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      value
+                          ? 'Auto-Sync enabled for ${activeProfile.name}.'
+                          : 'Auto-Sync disabled.',
+                    ),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              },
+            ),
+            const Divider(height: 16),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.key_rounded),
+              title: const Text(
+                'Copy Active Machine Public Key',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+              ),
+              subtitle: const Text(
+                'Paste into ~/.ssh/authorized_keys on your laptop for passwordless login.',
+                style: TextStyle(fontSize: 11),
+              ),
+              onTap: () => _copyPublicKey(activeProfile),
+            ),
+          ],
         ),
       ),
     );
@@ -730,6 +1136,13 @@ class _ProfileFormSheetState extends State<_ProfileFormSheet> {
       final id = widget.existingProfile?.id ?? const Uuid().v4();
       final priority = widget.existingProfile?.priority ?? 0;
 
+      final remotePaths = widget.existingProfile?.remotePaths ??
+          <String>[
+            _remoteDirController.text.trim().isNotEmpty
+                ? _remoteDirController.text.trim()
+                : '~/sticky-notes'
+          ];
+
       final profile = SshProfile(
         id: id,
         name: _nameController.text.trim(),
@@ -739,6 +1152,7 @@ class _ProfileFormSheetState extends State<_ProfileFormSheet> {
         remoteDir: _remoteDirController.text.trim().isNotEmpty
             ? _remoteDirController.text.trim()
             : '~/sticky-notes',
+        remotePaths: remotePaths,
         priority: priority,
         privateKeyId: id,
       );

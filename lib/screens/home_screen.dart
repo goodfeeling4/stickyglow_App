@@ -73,7 +73,10 @@ class _HomeScreenState extends State<HomeScreen>
     final didChange = await Navigator.push<bool>(
       context,
       MaterialPageRoute<bool>(
-        builder: (_) => NoteEditorScreen(noteId: noteId),
+        builder: (_) => NoteEditorScreen(
+          noteId: noteId,
+          profileId: viewModel.activeProfileId,
+        ),
       ),
     );
     if (mounted && (didChange == true)) {
@@ -326,13 +329,17 @@ class _HomeScreenState extends State<HomeScreen>
           // Settings gear icon
           IconButton(
             tooltip: 'SSH Settings',
-            onPressed: () {
-              Navigator.push<void>(
+            onPressed: () async {
+              await Navigator.push<void>(
                 context,
                 MaterialPageRoute<void>(
                   builder: (_) => const SshSettingsScreen(),
                 ),
               );
+              if (context.mounted) {
+                await viewModel.loadNotes();
+                await viewModel.checkAndAutoSync();
+              }
             },
             icon: const Icon(Icons.settings_outlined),
           ),
@@ -347,11 +354,13 @@ class _HomeScreenState extends State<HomeScreen>
         decoration: bgDecoration,
         child: Column(
         children: <Widget>[
-          // Sync status pill header
+          // Sync status and machine selector pill header
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Row(
               children: <Widget>[
+                _buildActiveMachineChip(context, viewModel, theme),
+                const SizedBox(width: 8),
                 SyncStatusPill(
                   state: viewModel.syncState,
                   onTap: () => viewModel.syncNow(),
@@ -645,6 +654,172 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildActiveMachineChip(
+    BuildContext context,
+    HomeViewModel viewModel,
+    ThemeData theme,
+  ) {
+    final active = viewModel.activeProfile;
+    final name = active?.name ?? 'No Machine';
+
+    return InkWell(
+      onTap: () => _showMachineSwitcherSheet(context, viewModel),
+      borderRadius: BorderRadius.circular(16),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 36),
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
+              width: 0.8,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(
+                Icons.computer_rounded,
+                size: 15,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 120),
+                child: Text(
+                  name,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 2),
+              Icon(
+                Icons.arrow_drop_down,
+                size: 18,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showMachineSwitcherSheet(BuildContext context, HomeViewModel viewModel) {
+    final theme = Theme.of(context);
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text(
+                        'Active SSH Machine',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Strictly one machine connects at a time. Switching displays that machine\'s offline notes without auto-connecting to others.',
+                        style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                if (viewModel.availableProfiles.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Center(
+                      child: Text(
+                        'No SSH machines configured yet.',
+                        style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                      ),
+                    ),
+                  )
+                else
+                  ...viewModel.availableProfiles.map((p) {
+                    final isSelected = p.id == viewModel.activeProfileId;
+                    return ListTile(
+                      leading: Icon(
+                        isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
+                        color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
+                      ),
+                      title: Text(
+                        p.name,
+                        style: TextStyle(
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      subtitle: Text('${p.username}@${p.host}:${p.port} (${p.remoteDir})'),
+                      trailing: isSelected
+                          ? Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primaryContainer,
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                'ACTIVE',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: theme.colorScheme.onPrimaryContainer,
+                                ),
+                              ),
+                            )
+                          : null,
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        viewModel.switchActiveProfile(p.id);
+                      },
+                    );
+                  }),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.settings_suggest_outlined),
+                  title: const Text('Manage Machines & Locations'),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    Navigator.push<void>(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => const SshSettingsScreen(),
+                      ),
+                    ).then((_) {
+                      if (context.mounted) {
+                        viewModel.loadNotes();
+                      }
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 

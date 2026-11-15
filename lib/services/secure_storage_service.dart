@@ -87,4 +87,24 @@ class SecureStorageService {
     final value = await _storage.read(key: _viewModeKey);
     return value != 'false';
   }
+
+  static const String _activeProfileIdKey = 'active_profile_id';
+
+  /// Saves the currently selected active SSH profile ID.
+  Future<void> saveActiveProfileId(String profileId) async {
+    await _storage.write(
+      key: _activeProfileIdKey,
+      value: profileId,
+    );
+  }
+
+  /// Retrieves the currently selected active SSH profile ID, or `null` if not set.
+  Future<String?> getActiveProfileId() async {
+    return _storage.read(key: _activeProfileIdKey);
+  }
+
+  /// Deletes the currently selected active SSH profile ID.
+  Future<void> deleteActiveProfileId() async {
+    await _storage.delete(key: _activeProfileIdKey);
+  }
 }

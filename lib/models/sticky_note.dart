@@ -15,12 +15,15 @@ enum SyncStatus {
 /// Represents an offline-first sticky note.
 ///
 /// Mobile-specific metadata ([colorIndex], [isPinned], [tags], [syncStatus],
-/// [conflictRemoteContent], [lastSyncedAt]) is stored in SQLite, while the note
-/// markdown content is saved as a plain-text `.md` file without YAML frontmatter.
+/// [conflictRemoteContent], [lastSyncedAt], [profileId], [remotePath]) is stored
+/// in SQLite, while the note markdown content is saved as a plain-text `.md` file
+/// inside the isolated profile compartment without YAML frontmatter.
 class StickyNote {
   /// Creates a new [StickyNote] instance.
   const StickyNote({
     required this.id,
+    this.profileId = '',
+    this.remotePath,
     required this.filename,
     required this.title,
     required this.content,
@@ -36,6 +39,12 @@ class StickyNote {
 
   /// Unique identifier (UUID v4).
   final String id;
+
+  /// Identifier of the SSH profile compartment this note belongs to.
+  final String profileId;
+
+  /// Remote directory or file path this note belongs to (e.g. '~/sticky-notes').
+  final String? remotePath;
 
   /// Markdown file name on disk and remote host (e.g. 'shopping-list.md').
   final String filename;
@@ -74,9 +83,15 @@ class StickyNote {
   ///
   /// Tags are serialized as a JSON string, dates as ISO-8601 strings,
   /// booleans as integers (1/0), and [syncStatus] as its enum name.
+  /// Converts this [StickyNote] to a SQLite-compatible map.
+  ///
+  /// Tags are serialized as a JSON string, dates as ISO-8601 strings,
+  /// booleans as integers (1/0), and [syncStatus] as its enum name.
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
       'id': id,
+      'profileId': profileId,
+      'remotePath': remotePath,
       'filename': filename,
       'title': title,
       'content': content,
@@ -127,6 +142,8 @@ class StickyNote {
 
     return StickyNote(
       id: map['id'] as String,
+      profileId: (map['profileId'] as String?) ?? '',
+      remotePath: map['remotePath'] as String?,
       filename: map['filename'] as String,
       title: (map['title'] as String?) ?? '',
       content: (map['content'] as String?) ?? '',
@@ -145,6 +162,8 @@ class StickyNote {
   /// Returns a copy of this [StickyNote] with updated fields.
   StickyNote copyWith({
     String? id,
+    String? profileId,
+    String? remotePath,
     String? filename,
     String? title,
     String? content,
@@ -161,6 +180,8 @@ class StickyNote {
   }) {
     return StickyNote(
       id: id ?? this.id,
+      profileId: profileId ?? this.profileId,
+      remotePath: remotePath ?? this.remotePath,
       filename: filename ?? this.filename,
       title: title ?? this.title,
       content: content ?? this.content,
@@ -209,6 +230,8 @@ class StickyNote {
     if (other is! StickyNote || runtimeType != other.runtimeType) return false;
 
     if (id != other.id ||
+        profileId != other.profileId ||
+        remotePath != other.remotePath ||
         filename != other.filename ||
         title != other.title ||
         content != other.content ||
@@ -233,6 +256,8 @@ class StickyNote {
   @override
   int get hashCode => Object.hash(
         id,
+        profileId,
+        remotePath,
         filename,
         title,
         content,
@@ -250,6 +275,7 @@ class StickyNote {
   String toString() {
     return 'StickyNote('
         'id: $id, '
+        'profileId: $profileId, '
         'filename: $filename, '
         'title: $title, '
         'colorIndex: $colorIndex, '

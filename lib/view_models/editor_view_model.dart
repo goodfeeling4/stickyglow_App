@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
+import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/utils/markdown_checklist_helper.dart';
 import 'package:uuid/uuid.dart';
 
@@ -27,14 +28,21 @@ class EditorViewModel extends ChangeNotifier {
   /// when composing a newly created sticky note.
   EditorViewModel({
     LocalDbService? localDbService,
+    SecureStorageService? secureStorageService,
     this.noteId,
+    this.profileId,
   })  : _localDbService = localDbService ?? LocalDbService(),
+        _secureStorageService = secureStorageService ?? SecureStorageService(),
         contentController = TextEditingController();
 
   final LocalDbService _localDbService;
+  final SecureStorageService _secureStorageService;
 
   /// The unique note ID if editing an existing note, or `null` for a new note.
   final String? noteId;
+
+  /// The profile ID compartment this note belongs to, or `null` to use active profile.
+  final String? profileId;
 
   /// Text editing controller for the note content.
   final TextEditingController contentController;
@@ -123,6 +131,7 @@ class EditorViewModel extends ChangeNotifier {
           await _localDbService.writeBaseFile(
             _note!.filename,
             _note!.conflictRemoteContent!,
+            profileId: _note!.profileId,
           );
         }
 
@@ -140,8 +149,13 @@ class EditorViewModel extends ChangeNotifier {
       } else {
         final id = const Uuid().v4();
         final filename = StickyNote.filenameFromTitle(title);
+        final effectiveProfileId = profileId ??
+            await _secureStorageService.getActiveProfileId() ??
+            '';
+
         noteToSave = StickyNote(
           id: id,
+          profileId: effectiveProfileId,
           filename: filename,
           title: title,
           content: content,
@@ -158,6 +172,7 @@ class EditorViewModel extends ChangeNotifier {
       await _localDbService.writeLocalFile(
         noteToSave.filename,
         noteToSave.content,
+        profileId: noteToSave.profileId,
       );
 
       _note = noteToSave;

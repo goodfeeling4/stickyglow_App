@@ -18,7 +18,8 @@ class FakeLocalDbService implements LocalDbService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
-  Future<List<StickyNote>> getAllNotes() async => storedNotes.values.toList();
+  Future<List<StickyNote>> getAllNotes({String? profileId}) async =>
+      storedNotes.values.toList();
 
   @override
   Future<List<SshProfile>> getAllProfiles() async => const [];
@@ -35,6 +36,12 @@ class FakeSecureStorageService implements SecureStorageService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
+  Future<String?> getActiveProfileId() async => null;
+
+  @override
+  Future<void> saveActiveProfileId(String profileId) async {}
+
+  @override
   Future<String?> getPrivateKey(String profileId) async => null;
 
   @override
@@ -46,7 +53,8 @@ class FakeSshSyncService implements SshSyncService {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
-  Future<SyncResult> syncAll() async => const SyncResult.empty();
+  Future<SyncResult> syncAll({String? profileId}) async =>
+      const SyncResult.empty();
 
   @override
   Future<SshProfile?> findReachableProfile() async => null;
