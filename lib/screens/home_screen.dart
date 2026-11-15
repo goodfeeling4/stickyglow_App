@@ -39,7 +39,6 @@ class _HomeScreenState extends State<HomeScreen>
       final vm = context.read<HomeViewModel>();
       vm.loadNotes();
       vm.initConnectivityListener();
-      vm.startUdpListener();
       vm.checkAndAutoSync();
     });
   }
@@ -49,12 +48,11 @@ class _HomeScreenState extends State<HomeScreen>
     if (!mounted) return;
     final vm = context.read<HomeViewModel>();
     if (state == AppLifecycleState.resumed) {
-      vm.startUdpListener();
       vm.checkAndAutoSync();
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.detached) {
-      vm.stopUdpListener();
+      vm.stopRemoteWatcher();
     }
   }
 
