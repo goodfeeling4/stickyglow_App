@@ -15,6 +15,7 @@ import 'package:sticky_notes_ssh/widgets/background_picker_sheet.dart';
 
 class FakeLocalDbService implements LocalDbService {
   final Map<String, StickyNote> storedNotes = {};
+  final List<SshProfile> storedProfiles = [];
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -24,7 +25,13 @@ class FakeLocalDbService implements LocalDbService {
       storedNotes.values.toList();
 
   @override
-  Future<List<SshProfile>> getAllProfiles() async => const [];
+  Future<List<SshProfile>> getAllProfiles() async => storedProfiles;
+
+  @override
+  Future<int> insertProfile(SshProfile profile) async {
+    storedProfiles.add(profile);
+    return storedProfiles.length;
+  }
 }
 
 class FakeSecureStorageService implements SecureStorageService {
@@ -70,6 +77,16 @@ class FakeSecureStorageService implements SecureStorageService {
   Future<void> setGridViewMode(bool grid) async {
     isGrid = grid;
   }
+
+  String? activeLocation;
+
+  @override
+  Future<void> saveActiveLocation(String? location) async {
+    activeLocation = location;
+  }
+
+  @override
+  Future<String?> getActiveLocation() async => activeLocation;
 }
 
 class FakeSshSyncService implements SshSyncService {
@@ -154,5 +171,88 @@ void main() {
 
     expect(homeVm.background.type, HomeBackgroundType.color);
     expect(homeVm.background.colorValue, 0xFFFFF8E1);
+  });
+
+  testWidgets('HomeScreen machine chip opens switcher sheet and shows independent directory entries with switches', (tester) async {
+    final fakeDb = FakeLocalDbService();
+    final fakeStorage = FakeSecureStorageService();
+    final fakeSync = FakeSshSyncService();
+
+    const p1 = SshProfile(
+      id: 'p1',
+      name: 'Laptop',
+      host: '192.168.1.100',
+      username: 'user',
+      remotePaths: <String>['~/sticky-notes', '~/projects/docs'],
+      privateKeyId: 'k1',
+    );
+    const p2 = SshProfile(
+      id: 'p2',
+      name: 'Home Server',
+      host: '192.168.1.200',
+      username: 'user',
+      remotePaths: <String>['/var/notes'],
+      privateKeyId: 'k2',
+    );
+
+    await fakeDb.insertProfile(p1);
+    await fakeDb.insertProfile(p2);
+    await fakeStorage.saveActiveProfileId('p1');
+    await fakeStorage.saveActiveLocation('~/sticky-notes');
+
+    final homeVm = HomeViewModel(
+      localDbService: fakeDb,
+      sshSyncService: fakeSync,
+      secureStorageService: fakeStorage,
+    );
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          Provider<LocalDbService>.value(value: fakeDb),
+          Provider<SecureStorageService>.value(value: fakeStorage),
+          Provider<SshSyncService>.value(value: fakeSync),
+          ChangeNotifierProvider<HomeViewModel>.value(value: homeVm),
+          ChangeNotifierProvider<SettingsViewModel>(
+            create: (_) => SettingsViewModel(
+              localDbService: fakeDb,
+              secureStorageService: fakeStorage,
+              sshSyncService: fakeSync,
+            ),
+          ),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.lightTheme(),
+          home: const HomeScreen(),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    // Verify machine chip shows Laptop (sticky-notes)
+    expect(find.text('Laptop (sticky-notes)'), findsOneWidget);
+
+    // Tap machine chip to open sheet
+    await tester.tap(find.text('Laptop (sticky-notes)'));
+    await tester.pumpAndSettle();
+
+    // Verify sheet title and independent items
+    expect(find.text('Active SSH Machine & Directory'), findsOneWidget);
+    expect(find.text('Laptop (~/sticky-notes)'), findsOneWidget);
+    expect(find.text('Laptop (~/projects/docs)'), findsOneWidget);
+    expect(find.text('Home Server (/var/notes)'), findsOneWidget);
+
+    // Verify separate switches for all 3 entries
+    expect(find.byType(Switch), findsNWidgets(3));
+
+    // Tap the second entry 'Laptop (~/projects/docs)'
+    await tester.tap(find.text('Laptop (~/projects/docs)'));
+    await tester.pumpAndSettle();
+
+    // Verify active selection updated
+    expect(homeVm.activeProfileId, 'p1');
+    expect(homeVm.activeRemotePath, '~/projects/docs');
+    expect(find.text('Laptop (docs)'), findsOneWidget);
   });
 }

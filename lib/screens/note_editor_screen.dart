@@ -17,6 +17,7 @@ class NoteEditorScreen extends StatefulWidget {
     super.key,
     this.noteId,
     this.profileId,
+    this.remotePath,
   });
 
   /// The unique ID of an existing note, or `null` to create a new note.
@@ -24,6 +25,9 @@ class NoteEditorScreen extends StatefulWidget {
 
   /// The profile ID compartment this note belongs to.
   final String? profileId;
+
+  /// The remote directory or file path compartment this note belongs to.
+  final String? remotePath;
 
   @override
   State<NoteEditorScreen> createState() => _NoteEditorScreenState();
@@ -41,6 +45,7 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
     _viewModel = EditorViewModel(
       noteId: widget.noteId,
       profileId: widget.profileId,
+      remotePath: widget.remotePath,
     );
 
     _viewModel.loadNote().then((_) {

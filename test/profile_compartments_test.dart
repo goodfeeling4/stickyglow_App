@@ -6,6 +6,7 @@ import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
+import 'package:sticky_notes_ssh/view_models/editor_view_model.dart';
 import 'package:sticky_notes_ssh/view_models/home_view_model.dart';
 import 'package:sticky_notes_ssh/view_models/settings_view_model.dart';
 import 'package:sticky_notes_ssh/widgets/sync_status_pill.dart';
@@ -143,6 +144,16 @@ class MockSecureStorageService implements SecureStorageService {
 
   @override
   Future<bool> getGridViewMode() async => true;
+
+  String? _activeLocation;
+
+  @override
+  Future<void> saveActiveLocation(String? location) async {
+    _activeLocation = location;
+  }
+
+  @override
+  Future<String?> getActiveLocation() async => _activeLocation;
 }
 
 class MockSshSyncService implements SshSyncService {
@@ -262,6 +273,7 @@ void main() {
       name: 'Work Laptop',
       host: '10.10.10.20',
       username: 'workuser',
+      remotePaths: <String>['~/work-notes', '~/sticky-notes'],
       privateKeyId: 'k-work',
     );
 
@@ -368,6 +380,83 @@ void main() {
       final result = await vm.syncNow();
       expect(result.pulled, 2);
       expect(sync.lastProbedProfileId, 'prof-work');
+    });
+
+    test('switchActiveProfileAndLocation switches profile and location and persists both', () async {
+      await storage.saveActiveProfileId('prof-home');
+      await vm.loadNotes();
+
+      expect(vm.activeProfileId, 'prof-home');
+
+      await vm.switchActiveProfileAndLocation('prof-work', '~/work-notes');
+
+      expect(vm.activeProfileId, 'prof-work');
+      expect(vm.activeRemotePath, '~/work-notes');
+      expect(await storage.getActiveProfileId(), 'prof-work');
+      expect(await storage.getActiveLocation(), '~/work-notes');
+    });
+
+    test('directory filtering shows only notes belonging to active directory location', () async {
+      const multiLocProfile = SshProfile(
+        id: 'prof-multi',
+        name: 'Multi Machine',
+        host: '192.168.1.50',
+        username: 'user',
+        remotePaths: <String>['~/personal-notes', '~/work-docs'],
+        privateKeyId: 'k-multi',
+      );
+      db.profiles['prof-multi'] = multiLocProfile;
+
+      db.notes['note-p1'] = StickyNote(
+        id: 'note-p1',
+        profileId: 'prof-multi',
+        remotePath: '~/personal-notes/diary.md',
+        filename: 'diary.md',
+        title: 'Diary',
+        content: '# Personal Diary',
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      db.notes['note-w2'] = StickyNote(
+        id: 'note-w2',
+        profileId: 'prof-multi',
+        remotePath: '~/work-docs/project.md',
+        filename: 'project.md',
+        title: 'Project Doc',
+        content: '# Project Spec',
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      await vm.switchActiveProfileAndLocation('prof-multi', '~/personal-notes');
+
+      expect(vm.notes.length, 2);
+      expect(vm.filteredNotes.length, 1);
+      expect(vm.filteredNotes.first.id, 'note-p1');
+
+      // Switch to work docs location
+      await vm.switchActiveProfileAndLocation('prof-multi', '~/work-docs');
+
+      expect(vm.notes.length, 2);
+      expect(vm.filteredNotes.length, 1);
+      expect(vm.filteredNotes.first.id, 'note-w2');
+    });
+
+    test('EditorViewModel sets remotePath for newly created note', () async {
+      final editorVm = EditorViewModel(
+        localDbService: db,
+        secureStorageService: storage,
+        profileId: 'prof-multi',
+        remotePath: '~/work-docs',
+      );
+
+      editorVm.contentController.text = '# Architecture\nDoc content';
+      await editorVm.saveNote();
+
+      expect(editorVm.note, isNotNull);
+      expect(editorVm.note!.profileId, 'prof-multi');
+      expect(editorVm.note!.remotePath, '~/work-docs');
     });
   });
 

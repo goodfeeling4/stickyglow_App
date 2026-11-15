@@ -107,4 +107,20 @@ class SecureStorageService {
   Future<void> deleteActiveProfileId() async {
     await _storage.delete(key: _activeProfileIdKey);
   }
+
+  static const String _activeLocationKey = 'active_profile_location';
+
+  /// Saves the currently selected active location/directory for notes.
+  Future<void> saveActiveLocation(String? location) async {
+    if (location == null) {
+      await _storage.delete(key: _activeLocationKey);
+    } else {
+      await _storage.write(key: _activeLocationKey, value: location);
+    }
+  }
+
+  /// Retrieves the currently selected active location/directory, or `null`.
+  Future<String?> getActiveLocation() async {
+    return _storage.read(key: _activeLocationKey);
+  }
 }

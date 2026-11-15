@@ -2,9 +2,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sticky_notes_ssh/models/home_background.dart';
+import 'package:sticky_notes_ssh/models/ssh_profile.dart';
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/screens/conflict_diff_screen.dart';
 import 'package:sticky_notes_ssh/screens/note_editor_screen.dart';
@@ -76,6 +78,7 @@ class _HomeScreenState extends State<HomeScreen>
         builder: (_) => NoteEditorScreen(
           noteId: noteId,
           profileId: viewModel.activeProfileId,
+          remotePath: viewModel.activeRemotePath,
         ),
       ),
     );
@@ -663,7 +666,17 @@ class _HomeScreenState extends State<HomeScreen>
     ThemeData theme,
   ) {
     final active = viewModel.activeProfile;
-    final name = active?.name ?? 'No Machine';
+    final String label;
+    if (active == null) {
+      label = 'No Machine';
+    } else if (viewModel.activeRemotePath != null &&
+        viewModel.activeRemotePath!.isNotEmpty) {
+      final base = p.basename(viewModel.activeRemotePath!);
+      final dirLabel = base.isNotEmpty ? base : viewModel.activeRemotePath!;
+      label = '${active.name} ($dirLabel)';
+    } else {
+      label = active.name;
+    }
 
     return InkWell(
       onTap: () => _showMachineSwitcherSheet(context, viewModel),
@@ -691,9 +704,9 @@ class _HomeScreenState extends State<HomeScreen>
               ),
               const SizedBox(width: 6),
               ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 120),
+                constraints: const BoxConstraints(maxWidth: 180),
                 child: Text(
-                  name,
+                  label,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -720,36 +733,79 @@ class _HomeScreenState extends State<HomeScreen>
     final theme = Theme.of(context);
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) {
+        final entries = <_MachineLocationItem>[];
+        for (final profile in viewModel.availableProfiles) {
+          final paths = profile.allRemotePaths;
+          for (final path in paths) {
+            final isCurrentActive = profile.id == viewModel.activeProfileId &&
+                (viewModel.activeRemotePath == null
+                    ? path == paths.first
+                    : viewModel.activeRemotePath == path);
+            entries.add(
+              _MachineLocationItem(
+                profile: profile,
+                locationPath: path,
+                isActive: isCurrentActive,
+              ),
+            );
+          }
+        }
+
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.75,
+            ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      const Text(
-                        'Active SSH Machine',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      Row(
+                        children: <Widget>[
+                          const Expanded(
+                            child: Text(
+                              'Active SSH Machine & Directory',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.primaryContainer,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '1 ACTIVE AT A TIME',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: theme.colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Strictly one machine connects at a time. Switching displays that machine\'s offline notes without auto-connecting to others.',
+                        'Each directory across every profile is listed independently below with its own switch. All compartments remain fully accessible offline.',
                         style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
                       ),
                     ],
                   ),
                 ),
                 const Divider(height: 1),
-                if (viewModel.availableProfiles.isEmpty)
+                if (entries.isEmpty)
                   Padding(
                     padding: const EdgeInsets.all(24),
                     child: Center(
@@ -760,43 +816,100 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   )
                 else
-                  ...viewModel.availableProfiles.map((p) {
-                    final isSelected = p.id == viewModel.activeProfileId;
-                    return ListTile(
-                      leading: Icon(
-                        isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked,
-                        color: isSelected ? theme.colorScheme.primary : theme.colorScheme.outline,
-                      ),
-                      title: Text(
-                        p.name,
-                        style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                        ),
-                      ),
-                      subtitle: Text('${p.username}@${p.host}:${p.port} (${p.remoteDir})'),
-                      trailing: isSelected
-                          ? Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.primaryContainer,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                'ACTIVE',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: theme.colorScheme.onPrimaryContainer,
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: entries.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final item = entries[index];
+                        final isFile = item.locationPath.endsWith('.md');
+
+                        return ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 4,
+                          ),
+                          leading: Icon(
+                            isFile
+                                ? Icons.description_outlined
+                                : Icons.folder_outlined,
+                            color: item.isActive
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.outline,
+                          ),
+                          title: Row(
+                            children: <Widget>[
+                              Expanded(
+                                child: Text(
+                                  '${item.profile.name} (${item.locationPath})',
+                                  style: TextStyle(
+                                    fontWeight: item.isActive
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                    fontSize: 14,
+                                    color: item.isActive
+                                        ? theme.colorScheme.primary
+                                        : theme.colorScheme.onSurface,
+                                  ),
                                 ),
                               ),
-                            )
-                          : null,
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        viewModel.switchActiveProfile(p.id);
+                              if (item.isActive) ...<Widget>[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: theme.colorScheme.primaryContainer,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    'ACTIVE',
+                                    style: TextStyle(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                      color: theme.colorScheme.onPrimaryContainer,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          subtitle: Text(
+                            '${item.profile.username}@${item.profile.host}:${item.profile.port} • ${isFile ? 'Markdown File' : 'Directory'}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          trailing: Semantics(
+                            label: 'Activate ${item.profile.name} ${item.locationPath}',
+                            child: Switch(
+                              value: item.isActive,
+                              onChanged: (bool val) {
+                                if (val) {
+                                  Navigator.pop(sheetContext);
+                                  viewModel.switchActiveProfileAndLocation(
+                                    item.profile.id,
+                                    item.locationPath,
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            viewModel.switchActiveProfileAndLocation(
+                              item.profile.id,
+                              item.locationPath,
+                            );
+                          },
+                        );
                       },
-                    );
-                  }),
+                    ),
+                  ),
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.settings_suggest_outlined),
@@ -861,4 +974,16 @@ class _HomeScreenState extends State<HomeScreen>
         );
     }
   }
+}
+
+class _MachineLocationItem {
+  const _MachineLocationItem({
+    required this.profile,
+    required this.locationPath,
+    required this.isActive,
+  });
+
+  final SshProfile profile;
+  final String locationPath;
+  final bool isActive;
 }

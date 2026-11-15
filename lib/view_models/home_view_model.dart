@@ -46,6 +46,7 @@ class HomeViewModel extends ChangeNotifier {
   HomeBackground _background = const HomeBackground.defaultTheme();
   bool _isGridView = true;
   String? _activeProfileId;
+  String? _activeRemotePath;
   SshProfile? _activeProfile;
   List<SshProfile> _availableProfiles = const <SshProfile>[];
 
@@ -60,6 +61,9 @@ class HomeViewModel extends ChangeNotifier {
 
   /// Currently active profile ID.
   String? get activeProfileId => _activeProfileId;
+
+  /// Currently active remote directory or file location filter.
+  String? get activeRemotePath => _activeRemotePath;
 
   /// The currently active SSH machine profile, or `null` if none configured.
   SshProfile? get activeProfile => _activeProfile;
@@ -128,6 +132,17 @@ class HomeViewModel extends ChangeNotifier {
           .where((p) => p.id == _activeProfileId)
           .firstOrNull;
 
+      _activeRemotePath = await _secureStorageService.getActiveLocation();
+      if (_activeProfile != null) {
+        final paths = _activeProfile!.allRemotePaths;
+        if (_activeRemotePath == null || !paths.contains(_activeRemotePath)) {
+          _activeRemotePath = paths.firstOrNull;
+          await _secureStorageService.saveActiveLocation(_activeRemotePath);
+        }
+      } else {
+        _activeRemotePath = null;
+      }
+
       _notes = await _localDbService.getAllNotes(profileId: _activeProfileId);
       _applyFilters();
       await loadPreferences();
@@ -139,15 +154,33 @@ class HomeViewModel extends ChangeNotifier {
 
   /// Switches the active machine profile and immediately loads its isolated compartment notes offline.
   Future<void> switchActiveProfile(String profileId) async {
-    if (_activeProfileId == profileId) return;
+    final profile = _availableProfiles.where((p) => p.id == profileId).firstOrNull;
+    final defaultPath = profile?.allRemotePaths.firstOrNull;
+    await switchActiveProfileAndLocation(profileId, defaultPath);
+  }
+
+  /// Switches the active machine profile and directory location, immediately loading
+  /// that isolated compartment's offline notes without requiring connection to other profiles.
+  Future<void> switchActiveProfileAndLocation(String profileId, String? remotePath) async {
+    final profileChanged = _activeProfileId != profileId;
+    final pathChanged = _activeRemotePath != remotePath;
+    if (!profileChanged && !pathChanged) return;
+
     _activeProfileId = profileId;
+    _activeRemotePath = remotePath;
     await _secureStorageService.saveActiveProfileId(profileId);
+    await _secureStorageService.saveActiveLocation(remotePath);
+
     _activeProfile = _availableProfiles.where((p) => p.id == profileId).firstOrNull;
-    _sshSyncService.stopRemoteFileWatcher();
-    _syncState = SyncState.offline;
+    if (profileChanged) {
+      _sshSyncService.stopRemoteFileWatcher();
+      _syncState = SyncState.offline;
+    }
     notifyListeners();
     await loadNotes();
-    unawaited(checkAndAutoSync());
+    if (profileChanged) {
+      unawaited(checkAndAutoSync());
+    }
   }
 
   /// Loads saved background and view mode preferences from storage.
@@ -390,7 +423,7 @@ class HomeViewModel extends ChangeNotifier {
     return result;
   }
 
-  /// Filters notes matching the current search query and tag selection.
+  /// Filters notes matching the current search query, tag selection, and active directory location.
   void _applyFilters() {
     final query = _searchQuery.trim().toLowerCase();
 
@@ -403,8 +436,43 @@ class HomeViewModel extends ChangeNotifier {
           _activeTag!.isEmpty ||
           note.tags.contains(_activeTag);
 
-      return matchesQuery && matchesTag;
+      final matchesLocation = _noteMatchesActiveLocation(note);
+
+      return matchesQuery && matchesTag && matchesLocation;
     }).toList();
+  }
+
+  /// Verifies whether [note] matches the currently active directory or file compartment.
+  bool _noteMatchesActiveLocation(StickyNote note) {
+    if (_activeRemotePath == null || _activeRemotePath!.isEmpty) {
+      return true;
+    }
+
+    final loc = _activeRemotePath!.trim();
+    if (note.remotePath == null || note.remotePath!.isEmpty) {
+      if (_activeProfile != null && _activeProfile!.allRemotePaths.isNotEmpty) {
+        return loc == _activeProfile!.allRemotePaths.first;
+      }
+      return true;
+    }
+
+    final notePath = note.remotePath!.trim();
+    if (notePath == loc) return true;
+
+    final normLoc = loc.replaceAll('\\', '/').replaceAll(RegExp(r'/+$'), '');
+    final normNote = notePath.replaceAll('\\', '/');
+
+    if (normNote == normLoc) return true;
+    if (normNote.startsWith('$normLoc/')) return true;
+
+    final locBase = p.basename(normLoc);
+    final noteDir = p.dirname(normNote);
+    final noteDirBase = p.basename(noteDir);
+    if (locBase.isNotEmpty && noteDirBase == locBase) return true;
+
+    if (p.basename(normNote) == p.basename(normLoc)) return true;
+
+    return false;
   }
 
   /// Stops the active remote SSH inotifywait watcher.

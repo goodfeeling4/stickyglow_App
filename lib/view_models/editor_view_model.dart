@@ -31,6 +31,7 @@ class EditorViewModel extends ChangeNotifier {
     SecureStorageService? secureStorageService,
     this.noteId,
     this.profileId,
+    this.remotePath,
   })  : _localDbService = localDbService ?? LocalDbService(),
         _secureStorageService = secureStorageService ?? SecureStorageService(),
         contentController = TextEditingController();
@@ -43,6 +44,9 @@ class EditorViewModel extends ChangeNotifier {
 
   /// The profile ID compartment this note belongs to, or `null` to use active profile.
   final String? profileId;
+
+  /// The remote directory or file path compartment this note belongs to.
+  final String? remotePath;
 
   /// Text editing controller for the note content.
   final TextEditingController contentController;
@@ -152,10 +156,13 @@ class EditorViewModel extends ChangeNotifier {
         final effectiveProfileId = profileId ??
             await _secureStorageService.getActiveProfileId() ??
             '';
+        final effectiveRemotePath = remotePath ??
+            await _secureStorageService.getActiveLocation();
 
         noteToSave = StickyNote(
           id: id,
           profileId: effectiveProfileId,
+          remotePath: effectiveRemotePath,
           filename: filename,
           title: title,
           content: content,

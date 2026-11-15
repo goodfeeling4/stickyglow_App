@@ -223,6 +223,16 @@ class FakeSecureStorageService implements SecureStorageService {
 
   @override
   Future<bool> getAutoSyncEnabled() async => autoSync;
+
+  String? activeLocation;
+
+  @override
+  Future<void> saveActiveLocation(String? location) async {
+    activeLocation = location;
+  }
+
+  @override
+  Future<String?> getActiveLocation() async => activeLocation;
 }
 
 void main() {
