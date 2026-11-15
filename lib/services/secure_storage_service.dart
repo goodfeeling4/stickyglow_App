@@ -51,4 +51,40 @@ class SecureStorageService {
     final value = await _storage.read(key: _autoSyncKey);
     return value == 'true';
   }
+
+  static const String _homeBackgroundKey = 'home_background_config';
+
+  /// Saves the home screen background configuration JSON.
+  Future<void> saveHomeBackground(String jsonConfig) async {
+    await _storage.write(
+      key: _homeBackgroundKey,
+      value: jsonConfig,
+    );
+  }
+
+  /// Retrieves the home screen background configuration JSON, or `null` if not set.
+  Future<String?> getHomeBackground() async {
+    return _storage.read(key: _homeBackgroundKey);
+  }
+
+  /// Deletes the home screen background configuration.
+  Future<void> deleteHomeBackground() async {
+    await _storage.delete(key: _homeBackgroundKey);
+  }
+
+  static const String _viewModeKey = 'home_is_grid_view';
+
+  /// Saves the home screen grid view mode preference.
+  Future<void> setGridViewMode(bool isGrid) async {
+    await _storage.write(
+      key: _viewModeKey,
+      value: isGrid ? 'true' : 'false',
+    );
+  }
+
+  /// Retrieves the home screen grid view preference, defaulting to true.
+  Future<bool> getGridViewMode() async {
+    final value = await _storage.read(key: _viewModeKey);
+    return value != 'false';
+  }
 }

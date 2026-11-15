@@ -1,7 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sticky_notes_ssh/models/home_background.dart';
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
@@ -37,6 +42,14 @@ class HomeViewModel extends ChangeNotifier {
   String? _activeTag;
   SyncState _syncState = SyncState.offline;
   bool _isLoading = false;
+  HomeBackground _background = const HomeBackground.defaultTheme();
+  bool _isGridView = true;
+
+  /// The active home screen background configuration.
+  HomeBackground get background => _background;
+
+  /// Whether the notes are displayed in 2-column grid or 1-column markdown reader.
+  bool get isGridView => _isGridView;
 
   /// All sticky notes loaded from the local database.
   List<StickyNote> get notes => _notes;
@@ -87,10 +100,73 @@ class HomeViewModel extends ChangeNotifier {
     try {
       _notes = await _localDbService.getAllNotes();
       _applyFilters();
+      await loadPreferences();
     } finally {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  /// Loads saved background and view mode preferences from storage.
+  Future<void> loadPreferences() async {
+    try {
+      final bgJson = await _secureStorageService.getHomeBackground();
+      if (bgJson != null && bgJson.isNotEmpty) {
+        _background = HomeBackground.fromJson(bgJson);
+      }
+      _isGridView = await _secureStorageService.getGridViewMode();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// Sets a new [HomeBackground] and persists it to storage.
+  Future<void> setBackground(HomeBackground newBg) async {
+    _background = newBg;
+    notifyListeners();
+    await _secureStorageService.saveHomeBackground(newBg.toJson());
+  }
+
+  /// Resets the background back to default theme.
+  Future<void> resetBackground() async {
+    _background = const HomeBackground.defaultTheme();
+    notifyListeners();
+    await _secureStorageService.deleteHomeBackground();
+  }
+
+  /// Launches the gallery picker, saves the chosen image locally, and updates [background].
+  Future<void> pickAndSetGalleryImage({ImagePicker? picker}) async {
+    final imagePicker = picker ?? ImagePicker();
+    final pickedFile = await imagePicker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 90,
+    );
+    if (pickedFile == null) return;
+
+    final appDocDir = await getApplicationDocumentsDirectory();
+    final bgDir = Directory(p.join(appDocDir.path, 'backgrounds'));
+    if (!await bgDir.exists()) {
+      await bgDir.create(recursive: true);
+    }
+
+    final ext = p.extension(pickedFile.path).isNotEmpty
+        ? p.extension(pickedFile.path)
+        : '.jpg';
+    final savedPath = p.join(
+      bgDir.path,
+      'home_bg_${DateTime.now().millisecondsSinceEpoch}$ext',
+    );
+
+    final savedFile = await File(pickedFile.path).copy(savedPath);
+    await setBackground(
+      HomeBackground.image(savedFile.path, overlayOpacity: 0.15),
+    );
+  }
+
+  /// Toggles between 2-column Grid View and 1-column Full Markdown Reader view.
+  Future<void> toggleViewMode() async {
+    _isGridView = !_isGridView;
+    notifyListeners();
+    await _secureStorageService.setGridViewMode(_isGridView);
   }
 
   /// Updates the search filter query and recalculates filtered notes.

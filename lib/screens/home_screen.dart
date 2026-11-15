@@ -1,12 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:sticky_notes_ssh/models/home_background.dart';
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/screens/conflict_diff_screen.dart';
 import 'package:sticky_notes_ssh/screens/note_editor_screen.dart';
 import 'package:sticky_notes_ssh/screens/ssh_settings_screen.dart';
 import 'package:sticky_notes_ssh/view_models/home_view_model.dart';
+import 'package:sticky_notes_ssh/widgets/background_picker_sheet.dart';
 import 'package:sticky_notes_ssh/widgets/sticky_card.dart';
 import 'package:sticky_notes_ssh/widgets/sync_status_pill.dart';
 
@@ -248,9 +252,15 @@ class _HomeScreenState extends State<HomeScreen>
     final hasPinned = viewModel.pinnedNotes.isNotEmpty;
     final hasUnpinned = viewModel.unpinnedNotes.isNotEmpty;
     final isEmpty = !hasPinned && !hasUnpinned;
+    final bgDecoration =
+        _buildBackgroundDecoration(viewModel.background, theme);
+    final isCustomBg = bgDecoration != null;
 
     return Scaffold(
+      backgroundColor: isCustomBg ? Colors.transparent : null,
       appBar: AppBar(
+        backgroundColor: isCustomBg ? Colors.transparent : null,
+        elevation: isCustomBg ? 0 : null,
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -268,6 +278,31 @@ class _HomeScreenState extends State<HomeScreen>
           ],
         ),
         actions: <Widget>[
+          // View mode toggle (Grid vs Markdown Reader)
+          IconButton(
+            tooltip: viewModel.isGridView
+                ? 'Markdown Reader View'
+                : 'Grid View',
+            onPressed: () => viewModel.toggleViewMode(),
+            icon: Icon(
+              viewModel.isGridView
+                  ? Icons.view_agenda_outlined
+                  : Icons.grid_view_rounded,
+            ),
+          ),
+          // Customize background button
+          IconButton(
+            tooltip: 'Customize background',
+            onPressed: () {
+              BackgroundPickerSheet.show(
+                context: context,
+                currentBackground: viewModel.background,
+                onBackgroundChanged: (newBg) => viewModel.setBackground(newBg),
+                onPickGalleryImage: () => viewModel.pickAndSetGalleryImage(),
+              );
+            },
+            icon: const Icon(Icons.palette_outlined),
+          ),
           // Animated sync button
           IconButton(
             tooltip: 'Sync with laptop',
@@ -308,7 +343,9 @@ class _HomeScreenState extends State<HomeScreen>
         onPressed: () => _navigateToEditor(noteId: null),
         child: const Icon(Icons.add),
       ),
-      body: Column(
+      body: Container(
+        decoration: bgDecoration,
+        child: Column(
         children: <Widget>[
           // Sync status pill header
           Padding(
@@ -497,7 +534,7 @@ class _HomeScreenState extends State<HomeScreen>
                           SliverPadding(
                             padding: const EdgeInsets.symmetric(horizontal: 12),
                             sliver: SliverMasonryGrid.count(
-                              crossAxisCount: 2,
+                              crossAxisCount: viewModel.isGridView ? 2 : 1,
                               mainAxisSpacing: 8,
                               crossAxisSpacing: 8,
                               childCount: viewModel.pinnedNotes.length,
@@ -505,6 +542,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 final note = viewModel.pinnedNotes[index];
                                 return StickyCard(
                                   note: note,
+                                  isCompact: viewModel.isGridView,
                                   onTap: () => _navigateToEditor(noteId: note.id),
                                   onCheckboxToggle: (int lineIndex) {
                                     viewModel.toggleCheckbox(note.id, lineIndex);
@@ -539,7 +577,7 @@ class _HomeScreenState extends State<HomeScreen>
                           SliverPadding(
                             padding: const EdgeInsets.all(12),
                             sliver: SliverMasonryGrid.count(
-                              crossAxisCount: 2,
+                              crossAxisCount: viewModel.isGridView ? 2 : 1,
                               mainAxisSpacing: 8,
                               crossAxisSpacing: 8,
                               childCount: viewModel.unpinnedNotes.length,
@@ -547,6 +585,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 final note = viewModel.unpinnedNotes[index];
                                 return StickyCard(
                                   note: note,
+                                  isCompact: viewModel.isGridView,
                                   onTap: () => _navigateToEditor(noteId: note.id),
                                   onCheckboxToggle: (int lineIndex) {
                                     viewModel.toggleCheckbox(note.id, lineIndex);
@@ -566,6 +605,7 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           ),
         ],
+      ),
       ),
     );
   }
@@ -606,5 +646,44 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ],
     );
+  }
+
+  BoxDecoration? _buildBackgroundDecoration(
+    HomeBackground bg,
+    ThemeData theme,
+  ) {
+    switch (bg.type) {
+      case HomeBackgroundType.defaultTheme:
+        return null;
+      case HomeBackgroundType.color:
+        if (bg.colorValue == null) return null;
+        return BoxDecoration(color: Color(bg.colorValue!));
+      case HomeBackgroundType.gradient:
+        final preset = bg.activeGradient;
+        if (preset == null) return null;
+        return BoxDecoration(
+          gradient: LinearGradient(
+            colors: preset.colors,
+            begin: preset.begin,
+            end: preset.end,
+          ),
+        );
+      case HomeBackgroundType.image:
+        if (bg.imagePath == null) return null;
+        final file = File(bg.imagePath!);
+        if (!file.existsSync()) return null;
+        return BoxDecoration(
+          image: DecorationImage(
+            image: FileImage(file),
+            fit: BoxFit.cover,
+            colorFilter: bg.overlayOpacity > 0
+                ? ColorFilter.mode(
+                    Colors.black.withValues(alpha: bg.overlayOpacity),
+                    BlendMode.darken,
+                  )
+                : null,
+          ),
+        );
+    }
   }
 }

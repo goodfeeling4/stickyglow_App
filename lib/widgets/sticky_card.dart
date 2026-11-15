@@ -3,6 +3,7 @@ import 'package:path/path.dart' as p;
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/theme/app_theme.dart';
 import 'package:sticky_notes_ssh/utils/markdown_checklist_helper.dart';
+import 'package:sticky_notes_ssh/widgets/markdown_viewer.dart';
 
 /// A sticky note card widget displaying title, preview, checklist items,
 /// tags, pin indicator, and sync conflict badge.
@@ -13,6 +14,7 @@ class StickyCard extends StatelessWidget {
     required this.note,
     required this.onTap,
     required this.onCheckboxToggle,
+    this.isCompact = true,
     this.onLongPress,
   });
 
@@ -24,6 +26,9 @@ class StickyCard extends StatelessWidget {
 
   /// Callback when a checklist item checkbox is toggled.
   final void Function(int lineIndex) onCheckboxToggle;
+
+  /// Whether to render a compact clamped preview or full markdown viewer.
+  final bool isCompact;
 
   /// Callback when the card is long-pressed.
   final VoidCallback? onLongPress;
@@ -38,10 +43,6 @@ class StickyCard extends StatelessWidget {
     final extractedTitle = MarkdownChecklistHelper.extractTitle(note.content);
     final displayTitle =
         note.title.trim().isNotEmpty ? note.title.trim() : extractedTitle;
-
-    final checklistItems =
-        MarkdownChecklistHelper.getChecklistLines(note.content);
-    final previewText = MarkdownChecklistHelper.extractPreview(note.content);
 
     return Card(
       elevation: 1.5,
@@ -127,80 +128,15 @@ class StickyCard extends StatelessWidget {
               ),
               const SizedBox(height: 8),
 
-              // Content preview / Checklist items
-              if (checklistItems.isNotEmpty) ...<Widget>[
-                ...checklistItems.take(5).map((item) {
-                  return Semantics(
-                    button: true,
-                    toggled: item.isChecked,
-                    label: '${item.text}, ${item.isChecked ? "completed" : "not completed"}',
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: InkWell(
-                        onTap: () => onCheckboxToggle(item.lineIndex),
-                        borderRadius: BorderRadius.circular(4),
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(minHeight: 32),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: <Widget>[
-                              Icon(
-                                item.isChecked
-                                    ? Icons.check_box_outlined
-                                    : Icons.check_box_outline_blank,
-                                size: 18,
-                                color: item.isChecked
-                                    ? theme.colorScheme.primary
-                                    : theme.colorScheme.onSurfaceVariant,
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  item.text,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    decoration: item.isChecked
-                                        ? TextDecoration.lineThrough
-                                        : TextDecoration.none,
-                                    color: item.isChecked
-                                        ? theme.colorScheme.onSurfaceVariant
-                                            .withValues(alpha: 0.6)
-                                        : theme.colorScheme.onSurface,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                }),
-                if (checklistItems.length > 5)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2, left: 23),
-                    child: Text(
-                      '+${checklistItems.length - 5} more items',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: theme.colorScheme.onSurfaceVariant
-                            .withValues(alpha: 0.7),
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-              ] else if (previewText.isNotEmpty) ...<Widget>[
-                Text(
-                  previewText,
-                  maxLines: 6,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    height: 1.35,
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.85),
-                  ),
+              // Markdown Content Viewer
+              if (note.content.trim().isNotEmpty) ...<Widget>[
+                MarkdownViewer(
+                  markdown: note.content,
+                  isCompact: isCompact,
+                  maxCompactLines: 6,
+                  skipFirstHeader: true,
+                  filterTitle: displayTitle,
+                  onCheckboxToggled: onCheckboxToggle,
                 ),
               ],
 
