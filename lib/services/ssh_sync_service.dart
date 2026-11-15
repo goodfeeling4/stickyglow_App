@@ -88,25 +88,6 @@ class SyncResult {
   }
 }
 
-/// Represents a Git log commit entry parsed from the remote repository.
-class GitLogEntry {
-  /// Creates a [GitLogEntry].
-  const GitLogEntry({
-    required this.hash,
-    required this.date,
-    required this.message,
-  });
-
-  /// Short commit hash (e.g. 'a1b2c3d').
-  final String hash;
-
-  /// Commit timestamp.
-  final DateTime date;
-
-  /// Commit subject message.
-  final String message;
-}
-
 /// Service handling SSH/SFTP connectivity, reachability probing,
 /// remote Git operations, and bidirectional file synchronization.
 class SshSyncService {
@@ -154,11 +135,7 @@ class SshSyncService {
 
   /// Connects to the remote host using [profile] credentials and returns an [SSHClient].
   Future<SSHClient> _connectClient(SshProfile profile) async {
-    final keyPem = await _secureStorageService.getPrivateKey(profile.id) ??
-        (profile.privateKeyId.isNotEmpty
-            ? await _secureStorageService.getPrivateKey(profile.privateKeyId)
-            : null);
-    final password = await _secureStorageService.getPassword(profile.id);
+    final keyPem = await _secureStorageService.getPrivateKey(profile.id);
 
     List<SSHKeyPair>? identities;
     if (keyPem != null && keyPem.trim().isNotEmpty) {
@@ -179,9 +156,6 @@ class SshSyncService {
       socket,
       username: profile.username,
       identities: identities,
-      onPasswordRequest: password != null && password.isNotEmpty
-          ? () => password
-          : null,
     );
 
     await client.authenticated;
@@ -723,62 +697,6 @@ class SshSyncService {
     return filename.endsWith('.md')
         ? filename.substring(0, filename.length - 3)
         : filename;
-  }
-
-  /// Retrieves the remote Git commit log history for [filename].
-  Future<List<GitLogEntry>> getGitLog(
-    SshProfile profile,
-    String filename, {
-    int limit = 20,
-  }) async {
-    SSHClient? client;
-    try {
-      client = await _connectClient(profile);
-      final remoteDir = await _resolveRemoteDir(client, profile.remoteDir);
-      final outputBytes = await client.run(
-        'cd "$remoteDir" && git log --format="%h|%aI|%s" -n $limit -- "$filename"',
-      );
-      final output = utf8.decode(outputBytes).trim();
-      if (output.isEmpty) return const <GitLogEntry>[];
-
-      final entries = <GitLogEntry>[];
-      final lines = output.split('\n');
-      for (final line in lines) {
-        final trimmed = line.trim();
-        if (trimmed.isEmpty) continue;
-        final parts = trimmed.split('|');
-        if (parts.length >= 3) {
-          final hash = parts[0];
-          final date = DateTime.tryParse(parts[1]) ?? DateTime.now();
-          final message = parts.sublist(2).join('|');
-          entries.add(GitLogEntry(hash: hash, date: date, message: message));
-        }
-      }
-      return entries;
-    } catch (_) {
-      return const <GitLogEntry>[];
-    } finally {
-      client?.close();
-    }
-  }
-
-  /// Retrieves the raw content of [filename] at the specified Git [commitHash].
-  Future<String> getFileAtCommit(
-    SshProfile profile,
-    String commitHash,
-    String filename,
-  ) async {
-    SSHClient? client;
-    try {
-      client = await _connectClient(profile);
-      final remoteDir = await _resolveRemoteDir(client, profile.remoteDir);
-      final outputBytes = await client.run(
-        'cd "$remoteDir" && git show "$commitHash:$filename"',
-      );
-      return utf8.decode(outputBytes, allowMalformed: true);
-    } finally {
-      client?.close();
-    }
   }
 
   /// Tests SSH connection, Git availability, and SFTP access for [profile],

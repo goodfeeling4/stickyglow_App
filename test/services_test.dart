@@ -73,21 +73,6 @@ void main() {
     });
   });
 
-  group('GitLogEntry Tests', () {
-    test('creates GitLogEntry with required properties', () {
-      final now = DateTime.now();
-      final entry = GitLogEntry(
-        hash: 'c3f4e5a',
-        date: now,
-        message: 'Updated shopping list',
-      );
-
-      expect(entry.hash, 'c3f4e5a');
-      expect(entry.date, now);
-      expect(entry.message, 'Updated shopping list');
-    });
-  });
-
   group('BackgroundSyncManager Tests', () {
     test('has correct static task identifiers', () {
       expect(BackgroundSyncManager.taskName, 'com.sticky.backgroundSync');

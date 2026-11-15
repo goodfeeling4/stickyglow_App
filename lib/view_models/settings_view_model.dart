@@ -145,12 +145,6 @@ class SettingsViewModel extends ChangeNotifier {
     await _secureStorageService.setAutoSyncEnabled(enabled);
     if (enabled) {
       await BackgroundSyncManager.enableAutoSync();
-      try {
-        final reachable = await _sshSyncService.findReachableProfile();
-        if (reachable != null) {
-          await _sshSyncService.syncAll();
-        }
-      } catch (_) {}
     } else {
       await BackgroundSyncManager.disableAutoSync();
     }

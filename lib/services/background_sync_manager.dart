@@ -25,14 +25,6 @@ class BackgroundSyncManager {
   /// Identifier for one-off immediate background sync task.
   static const String immediateTaskName = 'com.sticky.immediateSync';
 
-  /// Workmanager callback dispatcher entry point.
-  @pragma('vm:entry-point')
-  static void callbackDispatcher() {
-    Workmanager().executeTask((String task, Map<String, dynamic>? inputData) async {
-      return performBackgroundSync();
-    });
-  }
-
   /// Initializes the Workmanager plugin and registers periodic auto-sync if supported.
   static Future<void> initialize() async {
     await enableAutoSync();

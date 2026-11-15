@@ -38,17 +38,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Boot receiver for background sync -->
-        <receiver
-            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$NetworkStateProxy"
-            android:exported="false"
-            android:enabled="true"
-            tools:replace="android:enabled">
-            <intent-filter>
-                <action android:name="android.net.conn.CONNECTIVITY_CHANGE"/>
-            </intent-filter>
-        </receiver>
-
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

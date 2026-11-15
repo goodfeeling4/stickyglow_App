@@ -38,9 +38,6 @@ class FakeSecureStorageService implements SecureStorageService {
   Future<String?> getPrivateKey(String profileId) async => null;
 
   @override
-  Future<String?> getPassword(String profileId) async => null;
-
-  @override
   Future<bool> getAutoSyncEnabled() async => false;
 }
 
