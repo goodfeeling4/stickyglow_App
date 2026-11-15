@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sticky_notes_ssh/models/ssh_profile.dart';
+import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/background_sync_manager.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
 
@@ -84,4 +86,54 @@ void main() {
       await expectLater(BackgroundSyncManager.disableAutoSync(), completes);
     });
   });
+
+  group('SyncWorker Model Tests', () {
+    test('SyncWorkerParams initializes with correct paths and profile', () {
+      const profile = SshProfile(
+        id: 'p1',
+        name: 'Home LAN',
+        host: '192.168.1.10',
+        username: 'testuser',
+        privateKeyId: 'k1',
+      );
+      const params = SyncWorkerParams(
+        profile: profile,
+        privateKeyPem: 'PEM_CONTENT',
+        notesDirPath: '/notes',
+        syncBaseDirPath: '/base',
+        localNotes: <StickyNote>[],
+      );
+
+      expect(params.profile.name, 'Home LAN');
+      expect(params.privateKeyPem, 'PEM_CONTENT');
+      expect(params.notesDirPath, '/notes');
+      expect(params.syncBaseDirPath, '/base');
+      expect(params.localNotes, isEmpty);
+    });
+
+    test('SyncWorkerResult preserves syncResult and database operations', () {
+      const syncResult = SyncResult(
+        pulled: 2,
+        pushed: 1,
+        autoMerged: 0,
+        conflicts: 0,
+        deleted: 0,
+        errors: <String>[],
+        connectedProfile: 'Home LAN',
+      );
+      const workerResult = SyncWorkerResult(
+        syncResult: syncResult,
+        notesToInsert: <StickyNote>[],
+        notesToUpdate: <StickyNote>[],
+        noteIdsToDelete: <String>['id-1'],
+        recentlyWrittenFiles: <String>['note1.md'],
+      );
+
+      expect(workerResult.syncResult.pulled, 2);
+      expect(workerResult.syncResult.pushed, 1);
+      expect(workerResult.noteIdsToDelete, contains('id-1'));
+      expect(workerResult.recentlyWrittenFiles, contains('note1.md'));
+    });
+  });
 }
+
