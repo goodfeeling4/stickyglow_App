@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/theme/app_theme.dart';
-import 'package:sticky_notes_ssh/utils/markdown_checklist_helper.dart';
 import 'package:sticky_notes_ssh/widgets/markdown_viewer.dart';
 
-/// A sticky note card widget displaying title, preview, checklist items,
-/// tags, pin indicator, and sync conflict badge.
+/// A sticky note card widget displaying pure plain-text Markdown content
+/// exactly as rendered in VS Code .md file preview, along with a sleek
+/// file metadata header and tags.
 class StickyCard extends StatelessWidget {
   /// Creates a [StickyCard].
   const StickyCard({
@@ -14,7 +13,7 @@ class StickyCard extends StatelessWidget {
     required this.note,
     required this.onTap,
     required this.onCheckboxToggle,
-    this.isCompact = true,
+    this.isCompact = false,
     this.onLongPress,
   });
 
@@ -27,7 +26,7 @@ class StickyCard extends StatelessWidget {
   /// Callback when a checklist item checkbox is toggled.
   final void Function(int lineIndex) onCheckboxToggle;
 
-  /// Whether to render a compact clamped preview or full markdown viewer.
+  /// Whether to slightly scale headings and padding for multi-column grid layouts.
   final bool isCompact;
 
   /// Callback when the card is long-pressed.
@@ -39,10 +38,6 @@ class StickyCard extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final backgroundColor = AppTheme.cardColor(note.colorIndex, theme.brightness);
     final isConflict = note.syncStatus == SyncStatus.conflict;
-
-    final extractedTitle = MarkdownChecklistHelper.extractTitle(note.content);
-    final displayTitle =
-        note.title.trim().isNotEmpty ? note.title.trim() : extractedTitle;
 
     return Card(
       elevation: 1.5,
@@ -69,98 +64,84 @@ class StickyCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              // Nested folder indicator if present
-              if (p.dirname(note.filename) != '.' &&
-                  p.dirname(note.filename).isNotEmpty) ...<Widget>[
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(
-                      Icons.folder_outlined,
-                      size: 13,
-                      color: theme.colorScheme.onSurfaceVariant
-                          .withValues(alpha: 0.7),
-                    ),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        p.dirname(note.filename),
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          color: theme.colorScheme.onSurfaceVariant
-                              .withValues(alpha: 0.8),
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-              ],
-
-              // Header: Title & Pin icon
+              // VS Code File Tab / Header
               Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
+                  Icon(
+                    Icons.description_outlined,
+                    size: 13,
+                    color: theme.colorScheme.onSurfaceVariant
+                        .withValues(alpha: 0.7),
+                  ),
+                  const SizedBox(width: 5),
                   Expanded(
                     child: Text(
-                      displayTitle,
+                      note.filename,
                       style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
-                        height: 1.25,
-                        color: theme.colorScheme.onSurface,
+                        fontFamily: 'monospace',
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.85),
                       ),
-                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (isConflict) ...<Widget>[
+                    const SizedBox(width: 6),
+                    const _ConflictBadge(),
+                  ],
                   if (note.isPinned) ...<Widget>[
                     const SizedBox(width: 6),
                     Icon(
                       Icons.push_pin_rounded,
-                      size: 16,
+                      size: 15,
                       color: theme.colorScheme.primary,
                     ),
                   ],
                 ],
               ),
-              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Divider(
+                  height: 1,
+                  thickness: 0.8,
+                  color: isDark
+                      ? Colors.white.withValues(alpha: 0.1)
+                      : Colors.black.withValues(alpha: 0.08),
+                ),
+              ),
 
-              // Markdown Content Viewer
-              if (note.content.trim().isNotEmpty) ...<Widget>[
+              // Full Markdown Content Preview (VS Code preview style - NO modifications)
+              if (note.content.trim().isNotEmpty)
                 MarkdownViewer(
                   markdown: note.content,
                   isCompact: isCompact,
-                  maxCompactLines: 6,
-                  skipFirstHeader: true,
-                  filterTitle: displayTitle,
                   onCheckboxToggled: onCheckboxToggle,
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    'Empty note',
+                    style: TextStyle(
+                      fontStyle: FontStyle.italic,
+                      fontSize: 12.5,
+                      color: theme.colorScheme.onSurfaceVariant
+                          .withValues(alpha: 0.6),
+                    ),
+                  ),
                 ),
-              ],
 
-              // Footer: Conflict badge (bottom-left) & Tags
-              if (isConflict || note.tags.isNotEmpty) ...<Widget>[
-                const SizedBox(height: 10),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: <Widget>[
-                    if (isConflict) ...<Widget>[
-                      const _ConflictBadge(),
-                      const SizedBox(width: 6),
-                    ],
-                    if (note.tags.isNotEmpty)
-                      Expanded(
-                        child: Wrap(
-                          spacing: 4,
-                          runSpacing: 4,
-                          children: note.tags
-                              .map((String tag) => _TagBadge(tag: tag))
-                              .toList(),
-                        ),
-                      ),
-                  ],
+              // Footer: Tags if present
+              if (note.tags.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: note.tags
+                      .map((String tag) => _TagBadge(tag: tag))
+                      .toList(),
                 ),
               ],
             ],

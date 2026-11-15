@@ -4,8 +4,9 @@ import 'package:sticky_notes_ssh/widgets/markdown_viewer.dart';
 
 void main() {
   group('MarkdownViewer Widget Tests', () {
-    testWidgets('renders headings correctly', (tester) async {
-      const markdown = '# Main Heading\n## Sub Heading\n### Section';
+    testWidgets('renders headings correctly with VS Code styling', (tester) async {
+      const markdown =
+          '# Main Heading\n## Sub Heading\n### Section\n#### Level 4\n##### Level 5\n###### Level 6';
 
       await tester.pumpWidget(
         const MaterialApp(
@@ -18,6 +19,12 @@ void main() {
       expect(find.text('Main Heading'), findsOneWidget);
       expect(find.text('Sub Heading'), findsOneWidget);
       expect(find.text('Section'), findsOneWidget);
+      expect(find.text('Level 4'), findsOneWidget);
+      expect(find.text('Level 5'), findsOneWidget);
+      expect(find.text('Level 6'), findsOneWidget);
+
+      // H1 and H2 include bottom Divider lines
+      expect(find.byType(Divider), findsNWidgets(2));
     });
 
     testWidgets('renders checklist items with toggle callback and accessibility semantics', (tester) async {

@@ -12,7 +12,7 @@ class MarkdownViewer extends StatelessWidget {
     required this.markdown,
     this.onCheckboxToggled,
     this.isCompact = false,
-    this.maxCompactLines = 8,
+    this.maxCompactLines,
     this.skipFirstHeader = false,
     this.filterTitle,
     this.baseTextStyle,
@@ -25,11 +25,11 @@ class MarkdownViewer extends StatelessWidget {
   /// Callback invoked with the 0-based line index when a checklist item is tapped.
   final ValueChanged<int>? onCheckboxToggled;
 
-  /// When true, renders a compact preview suitable for grid cards.
+  /// When true, renders with scaled padding and fonts for grid cards.
   final bool isCompact;
 
-  /// Maximum items or lines to display when [isCompact] is true.
-  final int maxCompactLines;
+  /// Optional maximum items or lines to display before showing more items indicator.
+  final int? maxCompactLines;
 
   /// If true, skips the first `# Header` line if it matches [filterTitle].
   final bool skipFirstHeader;
@@ -58,8 +58,8 @@ class MarkdownViewer extends StatelessWidget {
 
     final defaultBodyStyle = baseTextStyle ??
         TextStyle(
-          fontSize: isCompact ? 13 : 14.5,
-          height: 1.35,
+          fontSize: isCompact ? 13.5 : 14.5,
+          height: 1.5,
           color: theme.colorScheme.onSurface.withValues(alpha: 0.88),
         );
 
@@ -94,7 +94,7 @@ class MarkdownViewer extends StatelessWidget {
       if (trimmed.startsWith('```')) {
         if (inCodeBlock) {
           inCodeBlock = false;
-          if (isCompact && renderedItemsCount >= maxCompactLines) {
+          if (maxCompactLines != null && renderedItemsCount >= maxCompactLines!) {
             totalRemainingItems++;
             continue;
           }
@@ -112,8 +112,8 @@ class MarkdownViewer extends StatelessWidget {
         continue;
       }
 
-      // Check compact limit
-      if (isCompact && renderedItemsCount >= maxCompactLines) {
+      // Check compact limit if maxCompactLines is specified
+      if (maxCompactLines != null && renderedItemsCount >= maxCompactLines!) {
         if (trimmed.isNotEmpty) {
           totalRemainingItems++;
         }
@@ -147,14 +147,16 @@ class MarkdownViewer extends StatelessWidget {
         continue;
       }
 
-      // Headings
-      if (trimmed.startsWith('# ') ||
-          trimmed.startsWith('## ') ||
-          trimmed.startsWith('### ') ||
-          trimmed.startsWith('#### ')) {
-        widgets.add(_buildHeading(context, trimmed));
-        renderedItemsCount++;
-        continue;
+      // Headings (H1 to H6)
+      if (trimmed.startsWith('#')) {
+        final headingMatch = RegExp(r'^(#{1,6})\s+(.*)$').firstMatch(trimmed);
+        if (headingMatch != null) {
+          final level = headingMatch.group(1)!.length;
+          final headingText = headingMatch.group(2)!;
+          widgets.add(_buildHeading(context, level, headingText));
+          renderedItemsCount++;
+          continue;
+        }
       }
 
       // Blockquote
@@ -209,7 +211,7 @@ class MarkdownViewer extends StatelessWidget {
       widgets.add(_buildCodeBlock(context, codeBlockLines.join('\n'), isDark));
     }
 
-    if (isCompact && totalRemainingItems > 0) {
+    if (maxCompactLines != null && totalRemainingItems > 0) {
       widgets.add(
         Padding(
           padding: const EdgeInsets.only(top: 4, left: 2),
@@ -286,7 +288,6 @@ class MarkdownViewer extends StatelessWidget {
                     context,
                     text,
                     itemStyle,
-                    maxLines: isCompact ? 2 : null,
                   ),
                 ),
               ],
@@ -297,41 +298,82 @@ class MarkdownViewer extends StatelessWidget {
     );
   }
 
-  Widget _buildHeading(BuildContext context, String rawHeading) {
-    String text;
-    double fontSize;
-    FontWeight fontWeight = FontWeight.bold;
+  Widget _buildHeading(BuildContext context, int level, String text) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final dividerColor =
+        isDark ? const Color(0xFF30363D) : const Color(0xFFD0D7DE);
 
-    if (rawHeading.startsWith('#### ')) {
-      text = rawHeading.substring(5);
-      fontSize = isCompact ? 13 : 14.5;
-    } else if (rawHeading.startsWith('### ')) {
-      text = rawHeading.substring(4);
-      fontSize = isCompact ? 14 : 16;
-    } else if (rawHeading.startsWith('## ')) {
-      text = rawHeading.substring(3);
-      fontSize = isCompact ? 15 : 18;
-    } else {
-      text = rawHeading.substring(2);
-      fontSize = isCompact ? 16.5 : 21;
+    double fontSize;
+    FontWeight fontWeight = FontWeight.w600;
+    bool hasDivider = false;
+    Color? color = theme.colorScheme.onSurface;
+
+    switch (level) {
+      case 1:
+        fontSize = isCompact ? 20 : 25;
+        fontWeight = FontWeight.bold;
+        hasDivider = true;
+        break;
+      case 2:
+        fontSize = isCompact ? 17 : 20;
+        fontWeight = FontWeight.w600;
+        hasDivider = true;
+        break;
+      case 3:
+        fontSize = isCompact ? 15 : 17;
+        fontWeight = FontWeight.w600;
+        break;
+      case 4:
+        fontSize = isCompact ? 13.5 : 15;
+        fontWeight = FontWeight.w600;
+        break;
+      case 5:
+        fontSize = isCompact ? 12.5 : 13.5;
+        fontWeight = FontWeight.w600;
+        break;
+      case 6:
+      default:
+        fontSize = isCompact ? 11.5 : 12.5;
+        fontWeight = FontWeight.w600;
+        color = theme.colorScheme.onSurfaceVariant;
+        break;
     }
 
-    return Padding(
+    final headingWidget = Padding(
       padding: EdgeInsets.only(
-        top: isCompact ? 4 : 8,
-        bottom: isCompact ? 2 : 4,
+        top: isCompact ? (level <= 2 ? 6.0 : 4.0) : (level <= 2 ? 10.0 : 6.0),
+        bottom: hasDivider ? 4.0 : (isCompact ? 2.0 : 4.0),
       ),
-      child: Text(
+      child: _buildFormattedText(
+        context,
         text,
-        style: TextStyle(
+        TextStyle(
           fontSize: fontSize,
           fontWeight: fontWeight,
           height: 1.25,
+          color: color,
         ),
-        maxLines: isCompact ? 2 : null,
-        overflow: isCompact ? TextOverflow.ellipsis : null,
       ),
     );
+
+    if (hasDivider) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          headingWidget,
+          Divider(
+            height: 6,
+            thickness: 0.8,
+            color: dividerColor,
+          ),
+          SizedBox(height: isCompact ? 2 : 4),
+        ],
+      );
+    }
+
+    return headingWidget;
   }
 
   Widget _buildBulletItem(
@@ -357,7 +399,6 @@ class MarkdownViewer extends StatelessWidget {
               context,
               text,
               baseStyle,
-              maxLines: isCompact ? 3 : null,
             ),
           ),
         ],
@@ -389,7 +430,6 @@ class MarkdownViewer extends StatelessWidget {
               context,
               text,
               baseStyle,
-              maxLines: isCompact ? 3 : null,
             ),
           ),
         ],
@@ -403,14 +443,17 @@ class MarkdownViewer extends StatelessWidget {
     TextStyle baseStyle,
   ) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
       margin: EdgeInsets.symmetric(vertical: isCompact ? 2 : 4),
-      padding: const EdgeInsets.only(left: 8, top: 2, bottom: 2),
+      padding: const EdgeInsets.only(left: 10, top: 2, bottom: 2),
       decoration: BoxDecoration(
         border: Border(
           left: BorderSide(
-            color: theme.colorScheme.primary.withValues(alpha: 0.65),
-            width: 3,
+            color: isDark
+                ? const Color(0xFF3B82F6)
+                : theme.colorScheme.primary.withValues(alpha: 0.7),
+            width: 3.5,
           ),
         ),
       ),
@@ -421,7 +464,6 @@ class MarkdownViewer extends StatelessWidget {
           fontStyle: FontStyle.italic,
           color: theme.colorScheme.onSurface.withValues(alpha: 0.8),
         ),
-        maxLines: isCompact ? 3 : null,
       ),
     );
   }
@@ -429,13 +471,13 @@ class MarkdownViewer extends StatelessWidget {
   Widget _buildCodeBlock(BuildContext context, String code, bool isDark) {
     return Container(
       width: double.infinity,
-      margin: EdgeInsets.symmetric(vertical: isCompact ? 3 : 6),
+      margin: EdgeInsets.symmetric(vertical: isCompact ? 4 : 8),
       padding: EdgeInsets.all(isCompact ? 8 : 12),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E1E) : const Color(0xFFF2F2F2),
-        borderRadius: BorderRadius.circular(8),
+        color: isDark ? const Color(0xFF1E1E1E) : const Color(0xFFF6F8FA),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: isDark ? const Color(0xFF333333) : const Color(0xFFE0E0E0),
+          color: isDark ? const Color(0xFF30363D) : const Color(0xFFD0D7DE),
           width: 0.8,
         ),
       ),
@@ -446,9 +488,9 @@ class MarkdownViewer extends StatelessWidget {
           style: TextStyle(
             fontFamily: 'monospace',
             fontSize: isCompact ? 11.5 : 13,
-            height: 1.35,
+            height: 1.45,
+            color: isDark ? const Color(0xFFE6EDF3) : const Color(0xFF1F2328),
           ),
-          maxLines: isCompact ? 4 : null,
         ),
       ),
     );
