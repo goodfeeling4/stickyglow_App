@@ -143,6 +143,16 @@ class FakeSshSyncService implements SshSyncService {
   @override
   Future<String> testConnection(SshProfile profile) async => nextTestResult;
 
+  int initializeCalls = 0;
+  SshProfile? lastInitializedProfile;
+
+  @override
+  Future<SyncResult> initializeDirectoryAndSync(SshProfile profile) async {
+    initializeCalls++;
+    lastInitializedProfile = profile;
+    return nextSyncResult;
+  }
+
   bool isWatching = false;
 
   @override

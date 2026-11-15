@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:sticky_notes_ssh/models/ssh_profile.dart';
 import 'package:sticky_notes_ssh/services/background_sync_manager.dart';
@@ -58,7 +60,7 @@ class SettingsViewModel extends ChangeNotifier {
   }
 
   /// Saves a new [profile] to SQLite, stores its [privateKeyPem] in secure storage,
-  /// and reloads the profile list.
+  /// reloads the profile list, and immediately runs SSH git init & sync.
   Future<void> addProfile(SshProfile profile, String privateKeyPem) async {
     await _localDbService.insertProfile(profile);
     await _secureStorageService.savePrivateKey(profile.id, privateKeyPem);
@@ -69,9 +71,11 @@ class SettingsViewModel extends ChangeNotifier {
       );
     }
     await loadProfiles();
+    unawaited(_sshSyncService.initializeDirectoryAndSync(profile));
   }
 
-  /// Updates an existing [profile] in SQLite and optionally updates its private key PEM.
+  /// Updates an existing [profile] in SQLite, optionally updates its private key PEM,
+  /// reloads profiles, and immediately runs SSH git init & sync on the remote directory.
   Future<void> updateProfile(
     SshProfile profile, {
     String? newPrivateKeyPem,
@@ -91,6 +95,7 @@ class SettingsViewModel extends ChangeNotifier {
       }
     }
     await loadProfiles();
+    unawaited(_sshSyncService.initializeDirectoryAndSync(profile));
   }
 
   /// Deletes the profile matching [id] from SQLite and purges its keys from secure storage.

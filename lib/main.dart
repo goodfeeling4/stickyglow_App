@@ -7,6 +7,7 @@ import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/notification_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
+import 'package:sticky_notes_ssh/services/udp_sync_service.dart';
 import 'package:sticky_notes_ssh/theme/app_theme.dart';
 import 'package:sticky_notes_ssh/view_models/home_view_model.dart';
 import 'package:sticky_notes_ssh/view_models/settings_view_model.dart';
@@ -28,6 +29,7 @@ Future<void> main() async {
     localDbService: localDbService,
     secureStorageService: secureStorageService,
   );
+  final udpSyncService = UdpSyncService();
 
   // Initialize background sync manager (Workmanager) if auto-sync is enabled
   if (!kIsWeb &&
@@ -49,11 +51,13 @@ Future<void> main() async {
         Provider<LocalDbService>.value(value: localDbService),
         Provider<SecureStorageService>.value(value: secureStorageService),
         Provider<SshSyncService>.value(value: sshSyncService),
+        Provider<UdpSyncService>.value(value: udpSyncService),
         ChangeNotifierProvider<HomeViewModel>(
           create: (_) => HomeViewModel(
             localDbService: localDbService,
             sshSyncService: sshSyncService,
             secureStorageService: secureStorageService,
+            udpSyncService: udpSyncService,
           ),
         ),
         ChangeNotifierProvider<SettingsViewModel>(

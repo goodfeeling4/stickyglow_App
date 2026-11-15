@@ -6,6 +6,7 @@ import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/services/secure_storage_service.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
+import 'package:sticky_notes_ssh/services/udp_sync_service.dart';
 import 'package:sticky_notes_ssh/utils/markdown_checklist_helper.dart';
 import 'package:sticky_notes_ssh/widgets/sync_status_pill.dart';
 
@@ -18,15 +19,18 @@ class HomeViewModel extends ChangeNotifier {
     SshSyncService? sshSyncService,
     SecureStorageService? secureStorageService,
     Connectivity? connectivity,
+    UdpSyncService? udpSyncService,
   })  : _localDbService = localDbService ?? LocalDbService(),
         _sshSyncService = sshSyncService ?? SshSyncService(),
         _secureStorageService = secureStorageService ?? SecureStorageService(),
-        _connectivity = connectivity ?? Connectivity();
+        _connectivity = connectivity ?? Connectivity(),
+        _udpSyncService = udpSyncService ?? UdpSyncService();
 
   final LocalDbService _localDbService;
   final SshSyncService _sshSyncService;
   final SecureStorageService _secureStorageService;
   final Connectivity _connectivity;
+  final UdpSyncService _udpSyncService;
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _connectivityDebounceTimer;
@@ -279,8 +283,26 @@ class HomeViewModel extends ChangeNotifier {
     }).toList();
   }
 
+  /// Starts the foreground UDP sync listener if not already listening.
+  /// Binds once and avoids duplicate connection requests.
+  Future<void> startUdpListener() async {
+    await _udpSyncService.startListening(
+      onSyncTrigger: () {
+        if (_syncState != SyncState.syncing) {
+          syncNow();
+        }
+      },
+    );
+  }
+
+  /// Stops and closes the foreground UDP socket when the app is paused, minimized, or closed.
+  void stopUdpListener() {
+    _udpSyncService.stopListening();
+  }
+
   @override
   void dispose() {
+    stopUdpListener();
     _connectivitySubscription?.cancel();
     _connectivityDebounceTimer?.cancel();
     _sshSyncService.stopRemoteFileWatcher();

@@ -305,6 +305,9 @@ class LocalDbService {
   Future<File> writeLocalFile(String filename, String content) async {
     final dir = await getNotesDir();
     final file = File(p.join(dir.path, filename));
+    if (!await file.parent.exists()) {
+      await file.parent.create(recursive: true);
+    }
     return file.writeAsString(content, flush: true);
   }
 
@@ -332,6 +335,9 @@ class LocalDbService {
   Future<File> writeBaseFile(String filename, String content) async {
     final dir = await getSyncBaseDir();
     final file = File(p.join(dir.path, filename));
+    if (!await file.parent.exists()) {
+      await file.parent.create(recursive: true);
+    }
     return file.writeAsString(content, flush: true);
   }
 

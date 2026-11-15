@@ -30,8 +30,8 @@ class BackgroundSyncManager {
     await enableAutoSync();
   }
 
-  /// Enables auto-sync by initializing Workmanager, scheduling the 15-minute periodic task,
-  /// and scheduling an immediate background sync check.
+  /// Enables auto-sync on event triggers (network connection, note save, app open)
+  /// without registering any periodic 15-minute background polling timers.
   static Future<void> enableAutoSync() async {
     if (!kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.android ||
@@ -43,15 +43,8 @@ class BackgroundSyncManager {
           isInDebugMode: false,
         );
 
-        await Workmanager().registerPeriodicTask(
-          taskName,
-          taskName,
-          frequency: const Duration(minutes: 15),
-          constraints: Constraints(
-            networkType: NetworkType.connected,
-          ),
-          existingWorkPolicy: ExistingWorkPolicy.update,
-        );
+        // Cancel any lingering periodic timer tasks previously scheduled
+        await Workmanager().cancelByUniqueName(taskName);
 
         await triggerImmediateSync();
       } catch (e) {

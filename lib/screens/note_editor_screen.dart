@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:sticky_notes_ssh/models/sticky_note.dart';
 import 'package:sticky_notes_ssh/services/local_db_service.dart';
 import 'package:sticky_notes_ssh/theme/app_theme.dart';
@@ -196,11 +197,28 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
             tooltip: 'Save and go back',
             onPressed: _handleBack,
           ),
-          title: Text(
-            derivedTitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (_viewModel.note != null &&
+                  p.dirname(_viewModel.note!.filename) != '.' &&
+                  p.dirname(_viewModel.note!.filename).isNotEmpty)
+                Text(
+                  '📁 ${p.dirname(_viewModel.note!.filename)}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.normal,
+                  ),
+                ),
+              Text(
+                derivedTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              ),
+            ],
           ),
           actions: <Widget>[
             // Mode toggle buttons

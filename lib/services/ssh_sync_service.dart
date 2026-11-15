@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
@@ -196,9 +196,17 @@ class SshSyncService {
   Future<void> _writeRemoteFile(
     SftpClient sftp,
     String remotePath,
-    String content,
-  ) async {
+    String content, {
+    SSHClient? client,
+  }) async {
     _recentlyWrittenByApp[p.basename(remotePath)] = DateTime.now();
+    _recentlyWrittenByApp[remotePath] = DateTime.now();
+    if (client != null) {
+      final parentDir = p.dirname(remotePath);
+      try {
+        await client.run('mkdir -p "$parentDir"');
+      } catch (_) {}
+    }
     final file = await sftp.open(
       remotePath,
       mode: SftpFileOpenMode.create |
@@ -209,6 +217,54 @@ class SshSyncService {
       await file.writeBytes(Uint8List.fromList(utf8.encode(content)));
     } finally {
       await file.close();
+    }
+  }
+
+  /// Recursively walks [remoteDir] over SFTP and collects all files ending with `.md`.
+  ///
+  /// Strictly ignores:
+  /// - Non-.md files (never touched or deleted)
+  /// - Hidden files and directories (.git, .sync_base, .cache, etc.)
+  Future<void> _listRemoteMdFilesRecursively({
+    required SftpClient sftp,
+    required String remoteDir,
+    required String relDir,
+    required Map<String, SftpName> mdFiles,
+    required Map<String, List<String>> conflictFiles,
+  }) async {
+    final currentDir = relDir.isEmpty ? remoteDir : '$remoteDir/$relDir';
+    List<SftpName> remoteEntries;
+    try {
+      remoteEntries = await sftp.listdir(currentDir);
+    } catch (_) {
+      return;
+    }
+
+    for (final entry in remoteEntries) {
+      final name = entry.filename;
+      if (name == '.' || name == '..' || name.startsWith('.')) {
+        continue;
+      }
+
+      final childRel = relDir.isEmpty ? name : '$relDir/$name';
+
+      if (entry.attr.isDirectory) {
+        await _listRemoteMdFilesRecursively(
+          sftp: sftp,
+          remoteDir: remoteDir,
+          relDir: childRel,
+          mdFiles: mdFiles,
+          conflictFiles: conflictFiles,
+        );
+      } else if (name.endsWith('.md')) {
+        if (childRel.contains('.conflict-')) {
+          final conflictIdx = childRel.indexOf('.conflict-');
+          final baseName = '${childRel.substring(0, conflictIdx)}.md';
+          conflictFiles.putIfAbsent(baseName, () => <String>[]).add(childRel);
+        } else {
+          mdFiles[childRel] = entry;
+        }
+      }
     }
   }
 
@@ -275,23 +331,17 @@ class SshSyncService {
         errors.add('Failed to auto-commit laptop changes: $e');
       }
 
-      // List remote .md files
+      // List remote .md files recursively
       final remoteMdFiles = <String, SftpName>{};
       final remoteConflictFiles = <String, List<String>>{};
       try {
-        final remoteEntries = await sftp.listdir(remoteDir);
-        for (final entry in remoteEntries) {
-          final name = entry.filename;
-          if (name.endsWith('.md') && !name.startsWith('.')) {
-            if (name.contains('.conflict-')) {
-              final conflictIdx = name.indexOf('.conflict-');
-              final baseName = '${name.substring(0, conflictIdx)}.md';
-              remoteConflictFiles.putIfAbsent(baseName, () => <String>[]).add(name);
-            } else {
-              remoteMdFiles[name] = entry;
-            }
-          }
-        }
+        await _listRemoteMdFilesRecursively(
+          sftp: sftp,
+          remoteDir: remoteDir,
+          relDir: '',
+          mdFiles: remoteMdFiles,
+          conflictFiles: remoteConflictFiles,
+        );
       } catch (e) {
         errors.add('Failed to list remote files via SFTP: $e');
         return SyncResult(
@@ -311,13 +361,17 @@ class SshSyncService {
         for (final note in localNotes) note.filename: note,
       };
 
-      // List base snapshots
+      // List base snapshots recursively
       final syncBaseDir = await _localDbService.getSyncBaseDir();
       final baseFilenames = <String>{};
       if (await syncBaseDir.exists()) {
-        await for (final entity in syncBaseDir.list()) {
+        await for (final entity in syncBaseDir.list(recursive: true)) {
           if (entity is File && entity.path.endsWith('.md')) {
-            baseFilenames.add(p.basename(entity.path));
+            var relPath = p.relative(entity.path, from: syncBaseDir.path);
+            if (p.style == p.Style.windows) {
+              relPath = relPath.replaceAll('\\', '/');
+            }
+            baseFilenames.add(relPath);
           }
         }
       }
@@ -368,7 +422,12 @@ class SshSyncService {
             final localNote = localNotesMap[filename]!;
             final content = await _localDbService.readLocalFile(filename) ??
                 localNote.content;
-            await _writeRemoteFile(sftp, '$remoteDir/$filename', content);
+            await _writeRemoteFile(
+              sftp,
+              '$remoteDir/$filename',
+              content,
+              client: client,
+            );
             await _localDbService.writeBaseFile(filename, content);
             await _localDbService.updateNote(
               localNote.copyWith(
@@ -508,6 +567,7 @@ class SshSyncService {
                   sftp,
                   '$remoteDir/$filename',
                   localContent,
+                  client: client,
                 );
                 await _localDbService.writeBaseFile(filename, localContent);
                 await _localDbService.updateNote(
@@ -527,7 +587,12 @@ class SshSyncService {
                 pushed++;
 
               case AutoMerged(:final mergedContent):
-                await _writeRemoteFile(sftp, '$remoteDir/$filename', mergedContent);
+                await _writeRemoteFile(
+                  sftp,
+                  '$remoteDir/$filename',
+                  mergedContent,
+                  client: client,
+                );
                 await _localDbService.writeLocalFile(filename, mergedContent);
                 await _localDbService.writeBaseFile(filename, mergedContent);
                 final title = _deriveTitle(mergedContent, filename);
@@ -562,6 +627,7 @@ class SshSyncService {
                     sftp,
                     '$remoteDir/$conflictFilename',
                     conflictContent,
+                    client: client,
                   );
                   remoteHasChanges = true;
                 } catch (e) {
@@ -856,6 +922,32 @@ class SshSyncService {
     }
   }
 
+  /// Ensures that the remote directory for [profile] exists and has a Git repo initialized,
+  /// then triggers an immediate bidirectional sync transaction.
+  Future<SyncResult> initializeDirectoryAndSync(SshProfile profile) async {
+    SSHClient? client;
+    try {
+      client = await _connectClient(profile);
+      final remoteDir = await _resolveRemoteDir(client, profile.remoteDir);
+
+      // Create remote directory
+      await client.run('mkdir -p "$remoteDir"');
+
+      // Ensure it is a Git repository and has user config
+      await client.run(
+        'cd "$remoteDir" && (git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
+        '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
+        '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local")',
+      );
+    } catch (e) {
+      debugPrint('Failed to initialize Git directory on remote: $e');
+    } finally {
+      client?.close();
+    }
+
+    return syncAll();
+  }
+
   SSHClient? _watcherClient;
   SSHSession? _watcherSession;
   StreamSubscription<String>? _watcherStdoutSubscription;
@@ -888,9 +980,9 @@ class SshSyncService {
         return;
       }
 
-      // Execute inotifywait in continuous monitor mode
+      // Execute inotifywait in continuous recursive monitor mode
       _watcherSession = await _watcherClient!.execute(
-        'inotifywait -m -q -e close_write,create,delete,moved_to,moved_from --format "%e %f" "$remoteDir"',
+        'inotifywait -r -m -q -e close_write,create,delete,moved_to,moved_from --format "%e %w%f" "$remoteDir"',
       );
 
       _isWatching = true;
@@ -904,21 +996,28 @@ class SshSyncService {
         if (trimmed.isEmpty) return;
 
         final spaceIdx = trimmed.indexOf(' ');
-        final filename =
+        final fullPath =
             spaceIdx != -1 ? trimmed.substring(spaceIdx + 1).trim() : trimmed;
 
-        // Ignore git internal files, temp files, and conflict backups
-        if (filename.contains('.git') ||
-            filename.contains('.conflict-') ||
-            !filename.endsWith('.md')) {
+        final relPath = fullPath.startsWith('$remoteDir/')
+            ? fullPath.substring(remoteDir.length + 1)
+            : p.basename(fullPath);
+
+        // Strictly ignore git internal files, temp files, and non-.md files
+        if (relPath.contains('.git') ||
+            relPath.contains('.sync_base') ||
+            relPath.contains('.conflict-') ||
+            !relPath.endsWith('.md')) {
           return;
         }
 
         // Suppress echo events caused by the phone's own SFTP writes
-        final writeTime = _recentlyWrittenByApp[filename];
+        final writeTime = _recentlyWrittenByApp[relPath] ??
+            _recentlyWrittenByApp[p.basename(relPath)];
         if (writeTime != null &&
             DateTime.now().difference(writeTime).inSeconds < 3) {
-          _recentlyWrittenByApp.remove(filename);
+          _recentlyWrittenByApp.remove(relPath);
+          _recentlyWrittenByApp.remove(p.basename(relPath));
           return;
         }
 

@@ -1,6 +1,10 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sticky_notes_ssh/services/background_sync_manager.dart';
 import 'package:sticky_notes_ssh/services/ssh_sync_service.dart';
+import 'package:sticky_notes_ssh/services/udp_sync_service.dart';
 
 void main() {
   group('SyncResult Tests', () {
@@ -82,6 +86,44 @@ void main() {
     test('enableAutoSync and disableAutoSync execute safely on non-mobile test runner', () async {
       await expectLater(BackgroundSyncManager.enableAutoSync(), completes);
       await expectLater(BackgroundSyncManager.disableAutoSync(), completes);
+    });
+  });
+
+  group('UdpSyncService Tests', () {
+    test('lifecycle: start, deduplicate bind, receive packet, and stop', () async {
+      final udp = UdpSyncService();
+      bool triggered = false;
+
+      await udp.startListening(
+        onSyncTrigger: () {
+          triggered = true;
+        },
+      );
+      expect(udp.isListening, isTrue);
+
+      // Duplicate startListening should not throw or duplicate bind
+      await udp.startListening(
+        onSyncTrigger: () {
+          triggered = true;
+        },
+      );
+      expect(udp.isListening, isTrue);
+
+      // Send a test packet to 127.0.0.1:41234
+      final sender = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+      sender.send(utf8.encode('sync'), InternetAddress.loopbackIPv4, 41234);
+      sender.close();
+
+      // Wait for debounce (500ms debounce interval)
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(triggered, isTrue);
+
+      udp.stopListening();
+      expect(udp.isListening, isFalse);
+
+      // Duplicate stopListening is idempotent
+      udp.stopListening();
+      expect(udp.isListening, isFalse);
     });
   });
 }
