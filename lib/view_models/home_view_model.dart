@@ -47,6 +47,7 @@ class HomeViewModel extends ChangeNotifier {
   bool _isGridView = true;
   String? _activeProfileId;
   String? _activeRemotePath;
+  Set<String> _selectedLocationKeys = <String>{};
   SshProfile? _activeProfile;
   List<SshProfile> _availableProfiles = const <SshProfile>[];
 
@@ -64,6 +65,16 @@ class HomeViewModel extends ChangeNotifier {
 
   /// Currently active remote directory or file location filter.
   String? get activeRemotePath => _activeRemotePath;
+
+  /// Set of currently selected location keys formatted as '$profileId::$locationPath'.
+  Set<String> get selectedLocationKeys => Set.unmodifiable(_selectedLocationKeys);
+
+  /// Number of currently selected directory/file compartments.
+  int get selectedLocationsCount => _selectedLocationKeys.length;
+
+  /// Whether the directory or file at [locationPath] for [profileId] is currently selected.
+  bool isLocationSelected(String profileId, String locationPath) =>
+      _selectedLocationKeys.contains('$profileId::$locationPath');
 
   /// The currently active SSH machine profile, or `null` if none configured.
   SshProfile? get activeProfile => _activeProfile;
@@ -133,6 +144,8 @@ class HomeViewModel extends ChangeNotifier {
           .firstOrNull;
 
       _activeRemotePath = await _secureStorageService.getActiveLocation();
+      final savedKeys = await _secureStorageService.getSelectedLocationKeys();
+
       if (_activeProfile != null) {
         final paths = _activeProfile!.allRemotePaths;
         if (_activeRemotePath == null || !paths.contains(_activeRemotePath)) {
@@ -143,7 +156,32 @@ class HomeViewModel extends ChangeNotifier {
         _activeRemotePath = null;
       }
 
-      _notes = await _localDbService.getAllNotes(profileId: _activeProfileId);
+      if (savedKeys != null) {
+        _selectedLocationKeys = savedKeys;
+      } else if (_activeProfileId != null && _activeRemotePath != null) {
+        _selectedLocationKeys = {'$_activeProfileId::$_activeRemotePath'};
+        await _secureStorageService.saveSelectedLocationKeys(_selectedLocationKeys);
+      } else {
+        _selectedLocationKeys = <String>{};
+      }
+
+      final selectedProfileIds = <String>{};
+      for (final key in _selectedLocationKeys) {
+        final parts = key.split('::');
+        if (parts.isNotEmpty && parts[0].isNotEmpty) {
+          selectedProfileIds.add(parts[0]);
+        }
+      }
+
+      final loadedNotes = <StickyNote>[];
+      if (_availableProfiles.isEmpty) {
+        loadedNotes.addAll(await _localDbService.getAllNotes());
+      } else {
+        for (final pid in selectedProfileIds) {
+          loadedNotes.addAll(await _localDbService.getAllNotes(profileId: pid));
+        }
+      }
+      _notes = loadedNotes;
       _applyFilters();
       await loadPreferences();
     } finally {
@@ -162,25 +200,73 @@ class HomeViewModel extends ChangeNotifier {
   /// Switches the active machine profile and directory location, immediately loading
   /// that isolated compartment's offline notes without requiring connection to other profiles.
   Future<void> switchActiveProfileAndLocation(String profileId, String? remotePath) async {
-    final profileChanged = _activeProfileId != profileId;
-    final pathChanged = _activeRemotePath != remotePath;
-    if (!profileChanged && !pathChanged) return;
-
     _activeProfileId = profileId;
     _activeRemotePath = remotePath;
+    if (remotePath != null) {
+      _selectedLocationKeys = {'$profileId::$remotePath'};
+      await _secureStorageService.saveSelectedLocationKeys(_selectedLocationKeys);
+    }
     await _secureStorageService.saveActiveProfileId(profileId);
     await _secureStorageService.saveActiveLocation(remotePath);
 
     _activeProfile = _availableProfiles.where((p) => p.id == profileId).firstOrNull;
-    if (profileChanged) {
-      _sshSyncService.stopRemoteFileWatcher();
-      _syncState = SyncState.offline;
-    }
+    _sshSyncService.stopRemoteFileWatcher();
+    _syncState = SyncState.offline;
     notifyListeners();
     await loadNotes();
-    if (profileChanged) {
-      unawaited(checkAndAutoSync());
+    unawaited(checkAndAutoSync());
+  }
+
+  /// Toggles selection of a specific directory or file compartment for [profileId].
+  Future<void> toggleLocationSelection(String profileId, String locationPath) async {
+    final key = '$profileId::$locationPath';
+    final updated = Set<String>.from(_selectedLocationKeys);
+    if (updated.contains(key)) {
+      updated.remove(key);
+      if (updated.isEmpty) {
+        _activeProfileId = profileId;
+        _activeRemotePath = locationPath;
+      } else {
+        final firstKey = updated.first;
+        final parts = firstKey.split('::');
+        if (parts.length >= 2) {
+          _activeProfileId = parts[0];
+          _activeRemotePath = parts[1];
+        }
+      }
+    } else {
+      updated.add(key);
+      _activeProfileId = profileId;
+      _activeRemotePath = locationPath;
     }
+
+    _selectedLocationKeys = updated;
+    await _secureStorageService.saveSelectedLocationKeys(_selectedLocationKeys);
+    if (_activeProfileId != null) {
+      await _secureStorageService.saveActiveProfileId(_activeProfileId!);
+    }
+    await _secureStorageService.saveActiveLocation(_activeRemotePath);
+    await loadNotes();
+  }
+
+  /// Selects all available directories and files across all configured machine profiles.
+  Future<void> selectAllLocations() async {
+    final allKeys = <String>{};
+    for (final p in _availableProfiles) {
+      for (final loc in p.allRemotePaths) {
+        allKeys.add('${p.id}::$loc');
+      }
+    }
+    _selectedLocationKeys = allKeys;
+    await _secureStorageService.saveSelectedLocationKeys(_selectedLocationKeys);
+    await loadNotes();
+  }
+
+  /// Clears all location selections.
+  Future<void> clearLocationSelection() async {
+    _selectedLocationKeys = <String>{};
+    await _secureStorageService.saveSelectedLocationKeys(_selectedLocationKeys);
+    await loadNotes();
   }
 
   /// Loads saved background and view mode preferences from storage.
@@ -436,22 +522,52 @@ class HomeViewModel extends ChangeNotifier {
           _activeTag!.isEmpty ||
           note.tags.contains(_activeTag);
 
-      final matchesLocation = _noteMatchesActiveLocation(note);
+      final matchesLocation = _noteMatchesLocationFilters(note);
 
       return matchesQuery && matchesTag && matchesLocation;
     }).toList();
   }
 
-  /// Verifies whether [note] matches the currently active directory or file compartment.
-  bool _noteMatchesActiveLocation(StickyNote note) {
-    if (_activeRemotePath == null || _activeRemotePath!.isEmpty) {
+  /// Verifies whether [note] matches the selected machine and directory filters.
+  bool _noteMatchesLocationFilters(StickyNote note) {
+    if (_availableProfiles.isEmpty) {
       return true;
     }
 
-    final loc = _activeRemotePath!.trim();
+    if (_selectedLocationKeys.isEmpty) {
+      return false;
+    }
+
+    for (final key in _selectedLocationKeys) {
+      final sepIndex = key.indexOf('::');
+      if (sepIndex == -1) continue;
+      final profileId = key.substring(0, sepIndex);
+      final locationPath = key.substring(sepIndex + 2);
+
+      if (_noteMatchesPath(note, profileId, locationPath)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /// Verifies whether [note] matches [locationPath] on [profileId].
+  bool _noteMatchesPath(StickyNote note, String? profileId, String locationPath) {
+    final noteProfileId = note.profileId.isNotEmpty ? note.profileId : _activeProfileId;
+    if (profileId != null &&
+        profileId.isNotEmpty &&
+        noteProfileId != null &&
+        noteProfileId.isNotEmpty &&
+        noteProfileId != profileId) {
+      return false;
+    }
+
+    final loc = locationPath.trim();
     if (note.remotePath == null || note.remotePath!.isEmpty) {
-      if (_activeProfile != null && _activeProfile!.allRemotePaths.isNotEmpty) {
-        return loc == _activeProfile!.allRemotePaths.first;
+      final profile = _availableProfiles.where((p) => p.id == profileId).firstOrNull;
+      if (profile != null && profile.allRemotePaths.isNotEmpty) {
+        return loc == profile.allRemotePaths.first;
       }
       return true;
     }

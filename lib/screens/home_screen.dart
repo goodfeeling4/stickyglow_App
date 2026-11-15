@@ -666,16 +666,22 @@ class _HomeScreenState extends State<HomeScreen>
     ThemeData theme,
   ) {
     final active = viewModel.activeProfile;
+    final int count = viewModel.selectedLocationsCount;
     final String label;
-    if (active == null) {
-      label = 'No Machine';
-    } else if (viewModel.activeRemotePath != null &&
-        viewModel.activeRemotePath!.isNotEmpty) {
-      final base = p.basename(viewModel.activeRemotePath!);
-      final dirLabel = base.isNotEmpty ? base : viewModel.activeRemotePath!;
-      label = '${active.name} ($dirLabel)';
+    if (count == 0) {
+      label = active?.name ?? 'No Machine';
+    } else if (count == 1) {
+      final key = viewModel.selectedLocationKeys.first;
+      final sepIndex = key.indexOf('::');
+      final profileId = sepIndex != -1 ? key.substring(0, sepIndex) : null;
+      final path = sepIndex != -1 ? key.substring(sepIndex + 2) : (viewModel.activeRemotePath ?? '');
+      final prof = viewModel.availableProfiles.where((p) => p.id == profileId).firstOrNull ?? active;
+      final profileName = prof?.name ?? 'Machine';
+      final base = p.basename(path);
+      final dirLabel = base.isNotEmpty ? base : path;
+      label = '$profileName ($dirLabel)';
     } else {
-      label = active.name;
+      label = '$count Locations';
     }
 
     return InkWell(
@@ -738,199 +744,205 @@ class _HomeScreenState extends State<HomeScreen>
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) {
-        final entries = <_MachineLocationItem>[];
-        for (final profile in viewModel.availableProfiles) {
-          final paths = profile.allRemotePaths;
-          for (final path in paths) {
-            final isCurrentActive = profile.id == viewModel.activeProfileId &&
-                (viewModel.activeRemotePath == null
-                    ? path == paths.first
-                    : viewModel.activeRemotePath == path);
-            entries.add(
-              _MachineLocationItem(
-                profile: profile,
-                locationPath: path,
-                isActive: isCurrentActive,
-              ),
-            );
-          }
-        }
+        return Consumer<HomeViewModel>(
+          builder: (context, vm, child) {
+            final entries = <_MachineLocationItem>[];
+            for (final profile in vm.availableProfiles) {
+              final paths = profile.allRemotePaths;
+              for (final path in paths) {
+                final isSelected = vm.isLocationSelected(profile.id, path);
+                final isPrimary = profile.id == vm.activeProfileId &&
+                    (vm.activeRemotePath == null
+                        ? path == paths.first
+                        : vm.activeRemotePath == path);
+                entries.add(
+                  _MachineLocationItem(
+                    profile: profile,
+                    locationPath: path,
+                    isSelected: isSelected,
+                    isPrimary: isPrimary,
+                  ),
+                );
+              }
+            }
 
-        return SafeArea(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(sheetContext).size.height * 0.75,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Row(
+            return SafeArea(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(sheetContext).size.height * 0.75,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
-                          const Expanded(
-                            child: Text(
-                              'Active SSH Machine & Directory',
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primaryContainer,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '1 ACTIVE AT A TIME',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                                color: theme.colorScheme.onPrimaryContainer,
+                          Row(
+                            children: <Widget>[
+                              const Expanded(
+                                child: Text(
+                                  'Machines & Directories',
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
                               ),
-                            ),
+                              TextButton(
+                                onPressed: () => vm.selectAllLocations(),
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                child: const Text('All', style: TextStyle(fontSize: 12)),
+                              ),
+                              const SizedBox(width: 4),
+                              TextButton(
+                                onPressed: () => vm.clearLocationSelection(),
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                child: const Text('Clear', style: TextStyle(fontSize: 12)),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Select multiple directories or files across profiles to view notes together. All remain accessible offline.',
+                            style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Each directory across every profile is listed independently below with its own switch. All compartments remain fully accessible offline.',
-                        style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                if (entries.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Center(
-                      child: Text(
-                        'No SSH machines configured yet.',
-                        style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
-                      ),
                     ),
-                  )
-                else
-                  Flexible(
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: entries.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final item = entries[index];
-                        final isFile = item.locationPath.endsWith('.md');
+                    const Divider(height: 1),
+                    if (entries.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Center(
+                          child: Text(
+                            'No SSH machines configured yet.',
+                            style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                        ),
+                      )
+                    else
+                      Flexible(
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: entries.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final item = entries[index];
+                            final isFile = item.locationPath.endsWith('.md');
 
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 4,
-                          ),
-                          leading: Icon(
-                            isFile
-                                ? Icons.description_outlined
-                                : Icons.folder_outlined,
-                            color: item.isActive
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.outline,
-                          ),
-                          title: Row(
-                            children: <Widget>[
-                              Expanded(
-                                child: Text(
-                                  '${item.profile.name} (${item.locationPath})',
-                                  style: TextStyle(
-                                    fontWeight: item.isActive
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                    fontSize: 14,
-                                    color: item.isActive
-                                        ? theme.colorScheme.primary
-                                        : theme.colorScheme.onSurface,
-                                  ),
-                                ),
+                            return ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 4,
                               ),
-                              if (item.isActive) ...<Widget>[
-                                const SizedBox(width: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: theme.colorScheme.primaryContainer,
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Text(
-                                    'ACTIVE',
-                                    style: TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.bold,
-                                      color: theme.colorScheme.onPrimaryContainer,
+                              leading: Icon(
+                                isFile
+                                    ? Icons.description_outlined
+                                    : Icons.folder_outlined,
+                                color: item.isSelected
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.outline,
+                              ),
+                              title: Row(
+                                children: <Widget>[
+                                  Expanded(
+                                    child: Text(
+                                      '${item.profile.name} (${item.locationPath})',
+                                      style: TextStyle(
+                                        fontWeight: item.isSelected
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
+                                        fontSize: 14,
+                                        color: item.isSelected
+                                            ? theme.colorScheme.primary
+                                            : theme.colorScheme.onSurface,
+                                      ),
                                     ),
                                   ),
+                                  if (item.isSelected) ...<Widget>[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: theme.colorScheme.primaryContainer,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        item.isPrimary ? 'ACTIVE' : 'SELECTED',
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.bold,
+                                          color: theme.colorScheme.onPrimaryContainer,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              subtitle: Text(
+                                '${item.profile.username}@${item.profile.host}:${item.profile.port} • ${isFile ? 'Markdown File' : 'Directory'}',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: theme.colorScheme.onSurfaceVariant,
                                 ),
-                              ],
-                            ],
-                          ),
-                          subtitle: Text(
-                            '${item.profile.username}@${item.profile.host}:${item.profile.port} • ${isFile ? 'Markdown File' : 'Directory'}',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          trailing: Semantics(
-                            label: 'Activate ${item.profile.name} ${item.locationPath}',
-                            child: Switch(
-                              value: item.isActive,
-                              onChanged: (bool val) {
-                                if (val) {
-                                  Navigator.pop(sheetContext);
-                                  viewModel.switchActiveProfileAndLocation(
-                                    item.profile.id,
-                                    item.locationPath,
-                                  );
-                                }
+                              ),
+                              trailing: Semantics(
+                                label: 'Toggle ${item.profile.name} ${item.locationPath}',
+                                child: Switch(
+                                  value: item.isSelected,
+                                  onChanged: (bool _) {
+                                    vm.toggleLocationSelection(
+                                      item.profile.id,
+                                      item.locationPath,
+                                    );
+                                  },
+                                ),
+                              ),
+                              onTap: () {
+                                vm.toggleLocationSelection(
+                                  item.profile.id,
+                                  item.locationPath,
+                                );
                               },
-                            ),
-                          ),
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            viewModel.switchActiveProfileAndLocation(
-                              item.profile.id,
-                              item.locationPath,
                             );
                           },
-                        );
+                        ),
+                      ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.settings_suggest_outlined),
+                      title: const Text('Manage Machines & Locations'),
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        Navigator.push<void>(
+                          context,
+                          MaterialPageRoute<void>(
+                            builder: (_) => const SshSettingsScreen(),
+                          ),
+                        ).then((_) {
+                          if (context.mounted) {
+                            final vm = context.read<HomeViewModel>();
+                            vm.loadNotes();
+                          }
+                        });
                       },
                     ),
-                  ),
-                const Divider(height: 1),
-                ListTile(
-                  leading: const Icon(Icons.settings_suggest_outlined),
-                  title: const Text('Manage Machines & Locations'),
-                  onTap: () {
-                    Navigator.pop(sheetContext);
-                    Navigator.push<void>(
-                      context,
-                      MaterialPageRoute<void>(
-                        builder: (_) => const SshSettingsScreen(),
-                      ),
-                    ).then((_) {
-                      if (context.mounted) {
-                        viewModel.loadNotes();
-                      }
-                    });
-                  },
+                  ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -980,10 +992,12 @@ class _MachineLocationItem {
   const _MachineLocationItem({
     required this.profile,
     required this.locationPath,
-    required this.isActive,
+    required this.isSelected,
+    required this.isPrimary,
   });
 
   final SshProfile profile;
   final String locationPath;
-  final bool isActive;
+  final bool isSelected;
+  final bool isPrimary;
 }

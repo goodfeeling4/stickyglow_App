@@ -175,6 +175,12 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
     final remoteConflictFiles = <String, List<String>>{};
     final configuredDirs = <String>[];
     String primaryRemoteDir = '';
+    String remoteHome = '';
+
+    try {
+      final homeBytes = await client.run('echo \$HOME');
+      remoteHome = utf8.decode(homeBytes).trim();
+    } catch (_) {}
 
     for (final configuredPath in profile.allRemotePaths) {
       final resolved = await SshSyncService._resolveRemoteDir(client, configuredPath);
@@ -199,13 +205,12 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
         }
         configuredDirs.add(resolved);
 
-        final batchCommand = 'mkdir -p "$resolved" && '
-            'cd "$resolved" && '
-            '(git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
+        final batchCommand = 'mkdir -p "$resolved" && cd "$resolved" && '
+            '((git rev-parse --git-dir >/dev/null 2>&1 || git init) && '
             '(git config user.name >/dev/null 2>&1 || git config user.name "Sticky Notes") && '
             '(git config user.email >/dev/null 2>&1 || git config user.email "notes@stickyapp.local") && '
             'git add -A && '
-            '(git diff --cached --quiet || git commit -m "Laptop auto-commit \$(date -Iseconds)") && '
+            '(git diff --cached --quiet || git commit -m "Laptop auto-commit \$(date -Iseconds)")) 2>/dev/null || true; '
             'find . -type f -name "*.md" -not -path "*/.*" -exec sha256sum {} +';
 
         try {
@@ -313,11 +318,23 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
         final isLocal = localNotesMap.containsKey(filename);
         final isBase = baseFileHashes.containsKey(filename);
 
-        final remoteFilePath = remoteFileFullPaths[filename] ??
-            (localNotesMap[filename]?.remotePath != null &&
-                    localNotesMap[filename]!.remotePath!.isNotEmpty
-                ? localNotesMap[filename]!.remotePath!
-                : '$remoteDir/$filename');
+        final rawRemotePath = remoteFileFullPaths[filename] ??
+            localNotesMap[filename]?.remotePath;
+        String remoteFilePath = (rawRemotePath != null && rawRemotePath.isNotEmpty)
+            ? rawRemotePath
+            : '$remoteDir/$filename';
+        if (!remoteFilePath.endsWith('.md')) {
+          remoteFilePath = remoteFilePath.endsWith('/')
+              ? '$remoteFilePath$filename'
+              : '$remoteFilePath/$filename';
+        }
+        if (remoteHome.isNotEmpty) {
+          if (remoteFilePath.startsWith('~/')) {
+            remoteFilePath = '$remoteHome/${remoteFilePath.substring(2)}';
+          } else if (remoteFilePath == '~') {
+            remoteFilePath = '$remoteHome/$filename';
+          }
+        }
         final fileRemoteDir = p.dirname(remoteFilePath);
 
         final localFile = File(p.join(params.notesDirPath, filename));
@@ -325,9 +342,51 @@ Future<SyncWorkerResult> _isolateSyncWorker(SyncWorkerParams params) async {
 
         // 1. Deletions
         if (isBase && !isRemote) {
-          // Deleted on laptop -> delete locally
+          // SAFETY GUARD 1: If remote returned 0 files across configured dirs but base files exist,
+          // do NOT delete local files. This prevents wiping all notes if remote command or path fails.
+          if (remoteMdFiles.isEmpty && baseFileHashes.isNotEmpty) {
+            continue;
+          }
+
           if (isLocal) {
             final localNote = localNotesMap[filename]!;
+            final localHash = localFileHashes[filename];
+            final baseHash = baseFileHashes[filename];
+
+            // SAFETY GUARD 2: If the user edited or saved this note locally (localHash != baseHash or status == pending),
+            // NEVER delete it! Re-push local modifications to the laptop.
+            final hasLocalEdits = (localHash != null && localHash != baseHash) ||
+                localNote.syncStatus == SyncStatus.pending;
+            if (hasLocalEdits) {
+              final content = (await localFile.exists())
+                  ? await localFile.readAsString()
+                  : localNote.content;
+              await SshSyncService._writeRemoteFile(
+                sftp,
+                remoteFilePath,
+                content,
+                client: client,
+              );
+              recentlyWrittenFiles.add(filename);
+              if (!baseFile.parent.existsSync()) {
+                await baseFile.parent.create(recursive: true);
+              }
+              await baseFile.writeAsString(content, flush: true);
+              notesToUpdate.add(
+                localNote.copyWith(
+                  profileId: profile.id,
+                  remotePath: remoteFilePath,
+                  syncStatus: SyncStatus.synced,
+                  lastSyncedAt: DateTime.now(),
+                  clearConflict: true,
+                ),
+              );
+              remoteHasChanges = true;
+              pushed++;
+              continue;
+            }
+
+            // Deleted on laptop -> delete locally
             noteIdsToDelete.add(localNote.id);
             if (await localFile.exists()) {
               await localFile.delete();

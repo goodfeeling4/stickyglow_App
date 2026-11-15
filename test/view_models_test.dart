@@ -225,6 +225,7 @@ class FakeSecureStorageService implements SecureStorageService {
   Future<bool> getAutoSyncEnabled() async => autoSync;
 
   String? activeLocation;
+  Set<String>? selectedLocationKeys;
 
   @override
   Future<void> saveActiveLocation(String? location) async {
@@ -233,6 +234,14 @@ class FakeSecureStorageService implements SecureStorageService {
 
   @override
   Future<String?> getActiveLocation() async => activeLocation;
+
+  @override
+  Future<void> saveSelectedLocationKeys(Set<String> keys) async {
+    selectedLocationKeys = Set.from(keys);
+  }
+
+  @override
+  Future<Set<String>?> getSelectedLocationKeys() async => selectedLocationKeys;
 }
 
 void main() {

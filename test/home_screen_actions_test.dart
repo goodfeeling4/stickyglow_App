@@ -79,6 +79,7 @@ class FakeSecureStorageService implements SecureStorageService {
   }
 
   String? activeLocation;
+  Set<String>? selectedLocationKeys;
 
   @override
   Future<void> saveActiveLocation(String? location) async {
@@ -87,6 +88,14 @@ class FakeSecureStorageService implements SecureStorageService {
 
   @override
   Future<String?> getActiveLocation() async => activeLocation;
+
+  @override
+  Future<void> saveSelectedLocationKeys(Set<String> keys) async {
+    selectedLocationKeys = Set.from(keys);
+  }
+
+  @override
+  Future<Set<String>?> getSelectedLocationKeys() async => selectedLocationKeys;
 }
 
 class FakeSshSyncService implements SshSyncService {
@@ -238,7 +247,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Verify sheet title and independent items
-    expect(find.text('Active SSH Machine & Directory'), findsOneWidget);
+    expect(find.text('Machines & Directories'), findsOneWidget);
     expect(find.text('Laptop (~/sticky-notes)'), findsOneWidget);
     expect(find.text('Laptop (~/projects/docs)'), findsOneWidget);
     expect(find.text('Home Server (/var/notes)'), findsOneWidget);
@@ -251,8 +260,9 @@ void main() {
     await tester.pumpAndSettle();
 
     // Verify active selection updated
-    expect(homeVm.activeProfileId, 'p1');
-    expect(homeVm.activeRemotePath, '~/projects/docs');
-    expect(find.text('Laptop (docs)'), findsOneWidget);
+    expect(homeVm.isLocationSelected('p1', '~/sticky-notes'), isTrue);
+    expect(homeVm.isLocationSelected('p1', '~/projects/docs'), isTrue);
+    expect(homeVm.selectedLocationsCount, 2);
+    expect(find.text('2 Locations'), findsOneWidget);
   });
 }

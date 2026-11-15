@@ -146,6 +146,7 @@ class MockSecureStorageService implements SecureStorageService {
   Future<bool> getGridViewMode() async => true;
 
   String? _activeLocation;
+  Set<String>? _selectedLocationKeys;
 
   @override
   Future<void> saveActiveLocation(String? location) async {
@@ -154,6 +155,14 @@ class MockSecureStorageService implements SecureStorageService {
 
   @override
   Future<String?> getActiveLocation() async => _activeLocation;
+
+  @override
+  Future<void> saveSelectedLocationKeys(Set<String> keys) async {
+    _selectedLocationKeys = Set.from(keys);
+  }
+
+  @override
+  Future<Set<String>?> getSelectedLocationKeys() async => _selectedLocationKeys;
 }
 
 class MockSshSyncService implements SshSyncService {
@@ -441,6 +450,125 @@ void main() {
       expect(vm.notes.length, 2);
       expect(vm.filteredNotes.length, 1);
       expect(vm.filteredNotes.first.id, 'note-w2');
+    });
+
+    test('multi-location selection displays notes from all checked directories simultaneously', () async {
+      const multiLocProfile = SshProfile(
+        id: 'prof-multi-dirs',
+        name: 'Multi Dir Machine',
+        host: '192.168.1.55',
+        username: 'user',
+        remotePaths: <String>['~/personal-notes', '~/work-docs', '~/archive'],
+        privateKeyId: 'k-multi',
+      );
+      db.profiles['prof-multi-dirs'] = multiLocProfile;
+
+      db.notes['note-dir1'] = StickyNote(
+        id: 'note-dir1',
+        profileId: 'prof-multi-dirs',
+        remotePath: '~/personal-notes/todo.md',
+        filename: 'todo.md',
+        title: 'Personal Todo',
+        content: '# Todo',
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      db.notes['note-dir2'] = StickyNote(
+        id: 'note-dir2',
+        profileId: 'prof-multi-dirs',
+        remotePath: '~/work-docs/design.md',
+        filename: 'design.md',
+        title: 'Design Spec',
+        content: '# Design',
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      db.notes['note-dir3'] = StickyNote(
+        id: 'note-dir3',
+        profileId: 'prof-multi-dirs',
+        remotePath: '~/archive/old.md',
+        filename: 'old.md',
+        title: 'Old Notes',
+        content: '# Archive',
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      // Start with only personal-notes selected
+      await vm.switchActiveProfileAndLocation('prof-multi-dirs', '~/personal-notes');
+      expect(vm.filteredNotes.length, 1);
+      expect(vm.filteredNotes.map((n) => n.id), contains('note-dir1'));
+
+      // Multi-select ~/work-docs as well
+      await vm.toggleLocationSelection('prof-multi-dirs', '~/work-docs');
+      expect(vm.selectedLocationsCount, 2);
+      expect(vm.isLocationSelected('prof-multi-dirs', '~/personal-notes'), isTrue);
+      expect(vm.isLocationSelected('prof-multi-dirs', '~/work-docs'), isTrue);
+      expect(vm.isLocationSelected('prof-multi-dirs', '~/archive'), isFalse);
+
+      // Both directory notes should now be visible simultaneously
+      expect(vm.filteredNotes.length, 2);
+      expect(vm.filteredNotes.map((n) => n.id), containsAll(<String>['note-dir1', 'note-dir2']));
+      expect(vm.filteredNotes.map((n) => n.id), isNot(contains('note-dir3')));
+
+      // Deselect personal-notes
+      await vm.toggleLocationSelection('prof-multi-dirs', '~/personal-notes');
+      expect(vm.selectedLocationsCount, 1);
+      expect(vm.filteredNotes.length, 1);
+      expect(vm.filteredNotes.first.id, 'note-dir2');
+    });
+
+    test('multi-location selection across different machines displays notes from both machines offline', () async {
+      await vm.loadNotes();
+
+      // Clear existing and select home desktop ~/sticky-notes AND work laptop ~/work-notes
+      await vm.clearLocationSelection();
+      await vm.toggleLocationSelection('prof-home', '~/sticky-notes');
+      await vm.toggleLocationSelection('prof-work', '~/work-notes');
+
+      expect(vm.selectedLocationsCount, 2);
+      expect(vm.isLocationSelected('prof-home', '~/sticky-notes'), isTrue);
+      expect(vm.isLocationSelected('prof-work', '~/work-notes'), isTrue);
+
+      // Both notes from different profiles/machines should be loaded and visible
+      final noteIds = vm.filteredNotes.map((n) => n.id).toList();
+      expect(noteIds, contains('note-h1'));
+      expect(noteIds, contains('note-w1'));
+    });
+
+    test('selectAllLocations and clearLocationSelection toggle all compartments', () async {
+      await vm.loadNotes();
+
+      await vm.selectAllLocations();
+      expect(vm.selectedLocationsCount, greaterThanOrEqualTo(3));
+      expect(vm.filteredNotes.length, 2);
+
+      await vm.clearLocationSelection();
+      expect(vm.selectedLocationsCount, 0);
+      expect(vm.filteredNotes.length, 0);
+    });
+
+    test('Safeguard: unpushed local edits retain SyncStatus.pending and are protected', () async {
+      final editedNote = StickyNote(
+        id: 'note-pending-1',
+        profileId: 'prof-work',
+        remotePath: '~/work-notes/draft.md',
+        filename: 'draft.md',
+        title: 'Local Draft',
+        content: '# Draft content',
+        syncStatus: SyncStatus.pending,
+        createdAt: now,
+        updatedAt: now,
+      );
+      await db.insertNote(editedNote);
+
+      final retrieved = await db.getNoteById('note-pending-1');
+      expect(retrieved, isNotNull);
+      expect(retrieved!.syncStatus, SyncStatus.pending);
+      expect(retrieved.profileId, 'prof-work');
+      expect(retrieved.remotePath, '~/work-notes/draft.md');
     });
 
     test('EditorViewModel sets remotePath for newly created note', () async {

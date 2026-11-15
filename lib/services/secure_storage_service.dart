@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Service managing secure credential storage for SSH profiles.
@@ -122,5 +124,29 @@ class SecureStorageService {
   /// Retrieves the currently selected active location/directory, or `null`.
   Future<String?> getActiveLocation() async {
     return _storage.read(key: _activeLocationKey);
+  }
+
+  static const String _selectedLocationsKey = 'selected_profile_locations';
+
+  /// Saves the set of multi-selected location keys ('$profileId::$locationPath').
+  Future<void> saveSelectedLocationKeys(Set<String> keys) async {
+    await _storage.write(
+      key: _selectedLocationsKey,
+      value: jsonEncode(keys.toList()),
+    );
+  }
+
+  /// Retrieves the set of multi-selected location keys, or null if never set.
+  Future<Set<String>?> getSelectedLocationKeys() async {
+    final raw = await _storage.read(key: _selectedLocationsKey);
+    if (raw == null) return null;
+    if (raw.isEmpty) return <String>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) => e.toString()).toSet();
+      }
+    } catch (_) {}
+    return <String>{};
   }
 }
